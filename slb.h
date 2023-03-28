@@ -6,6 +6,20 @@
 #include <bpf_helpers.h>
 #include <bpf_endian.h>
 
+#undef AF_INET
+#define AF_INET 2
+
+#define NUM_BACKENDS 2
+typedef struct host_meta {
+    char *ip;
+    __u32 ip_int;
+    __u16 port;
+} hm;
+
+#ifndef memcpy
+#define memcpy(dest, src, n) __builtin_memcpy((dest), (src), (n))
+#endif
+
 static __always_inline __u16
 csum_fold_helper(__u64 csum)
 {
