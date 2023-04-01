@@ -15,6 +15,7 @@ $(BPF_OBJ): %.o: %.c
 	    -D __BPF_TRACING__ \
 	    -Ilibbpf/src\
 	    -Wall \
+		-g \
 	    -Wno-unused-value \
 	    -Wno-pointer-sign \
 	    -Wno-compare-distinct-pointer-types \
