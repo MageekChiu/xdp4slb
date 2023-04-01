@@ -1,15 +1,12 @@
-// #include <stddef.h>
-// #include <linux/bpf.h>
-// #include <linux/in.h>
-// #include <linux/if_ether.h>
-// #include <linux/ip.h>
-// #include <linux/tcp.h>
-// #include <linux/if_packet.h>
-// #include <linux/types.h>
-// #include <bpf/bpf_core_read.h>
-// #include <bpf/bpf_helpers.h>
-// #include <bpf/bpf_endian.h>
-#include "vmlinux.h"
+#include <stddef.h>
+#include <linux/bpf.h>
+#include <linux/in.h>
+#include <linux/if_ether.h>
+#include <linux/ip.h>
+#include <linux/tcp.h>
+#include <linux/if_packet.h>
+#include <linux/types.h>
+// #include "vmlinux.h"
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
 
@@ -17,7 +14,7 @@
 #define ETH_P_IP	0x0800		
 #define ETH_ALEN 6
 
-#define TCP_MAX_BITS 1400
+#define TCP_MAX_BITS 1480
 
 #undef AF_INET
 #define AF_INET 2
@@ -74,15 +71,30 @@ iph_csum(struct iphdr *iph){
 }
 
 static __attribute__((always_inline)) __u16 
-ipv4_l4_csum(void* data_start, __u32 data_size, struct iphdr* iph) {
-    __u32 tmp = 0;
-    __u64* csum = 0;
-    *csum = bpf_csum_diff(0, 0, &iph->saddr, sizeof(__be32), *csum);
-    *csum = bpf_csum_diff(0, 0, &iph->daddr, sizeof(__be32), *csum);
-    tmp = __builtin_bswap32((__u32)(iph->protocol));
-    *csum = bpf_csum_diff(0, 0, &tmp, sizeof(__u32), *csum);
-    tmp = __builtin_bswap32((__u32)(data_size));
-    *csum = bpf_csum_diff(0, 0, &tmp, sizeof(__u32), *csum);
-    *csum = bpf_csum_diff(0, 0, data_start, data_size, *csum);
-    return csum_fold_helper(*csum);
+ipv4_l4_csum(void* data_start, __u32 data_size, struct iphdr* iph,void *data_end) {
+    __u64 csum_buffer = 0;
+    __u16 *buf = (void *)data_start;
+
+    // Compute pseudo-header checksum
+    csum_buffer += (__u32)iph->saddr;
+    csum_buffer += (__u32)(iph->saddr >> 16);
+    csum_buffer += (__u32)iph->daddr;
+    csum_buffer += (__u32)(iph->daddr >> 16);
+    csum_buffer += (__u32)iph->protocol << 8;
+    csum_buffer += data_size;
+
+    // Compute checksum on udp header + payload
+    for (int i = 0; i < TCP_MAX_BITS; i += 2) {
+        if ((void *)(buf + 1) > data_end) {
+            break;
+        }
+        csum_buffer += *buf;
+        buf++;
+    }
+    if ((void *)buf + 1 <= data_end) {
+    // In case payload is not 2 bytes aligned
+        csum_buffer += *(__u8 *)buf;
+    }
+
+    return csum_fold_helper(csum_buffer);
 }

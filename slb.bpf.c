@@ -108,7 +108,7 @@ SEC("xdp")
 int xdp_load_balancer(struct xdp_md *ctx)
 {
     // test where error is
-    return XDP_PASS;
+    // return XDP_PASS;
     void *data = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
     bpf_printk("Got a packet");
@@ -163,6 +163,8 @@ int xdp_load_balancer(struct xdp_md *ctx)
         action = gen_mac(ctx,eth,iph,slb.mac_addr,rs->mac_addr);
         bpf_printk("Got a nat packet of tuple, from %x:%x to %x:%x", iph->saddr,sport,iph->daddr,dport);
     }else{
+        // disable this branch, so the error out put is clearer
+        return XDP_PASS;
         ce nat_key = {
             .ip = bpf_htonl(iph->daddr),
             .port = dport
@@ -170,7 +172,7 @@ int xdp_load_balancer(struct xdp_md *ctx)
         ce *nat_p = bpf_map_lookup_elem(&snat_map, &nat_key);
         if (nat_p == NULL) {
             bpf_printk("No such connection from client before");
-            return XDP_DROP;
+            return XDP_PASS;
         }
         iph->daddr = nat_p->ip;
         tcph->dest = nat_p->port;
@@ -181,7 +183,9 @@ int xdp_load_balancer(struct xdp_md *ctx)
     }
     // action = gen_mac(ctx,eth,iph);
     iph->check = iph_csum(iph);
-    tcph->check = ipv4_l4_csum(tcph, tcp_len, iph);
+    // here is the problem
+    // return XDP_PASS;
+    tcph->check = ipv4_l4_csum(tcph, tcp_len, iph,data_end);
     // return action;
     return XDP_TX;
 }
