@@ -24,9 +24,56 @@ struct {
 } dnat_map SEC(".maps");
 
 static __attribute__((always_inline)) int gen_mac(struct xdp_md *ctx, struct ethhdr *eth ,struct iphdr *iph,
-                unsigned char new_src[ETH_ALEN],unsigned char new_dest[ETH_ALEN]){  
-    memcpy(eth->h_source, new_src, ETH_ALEN);
-    memcpy(eth->h_dest, new_dest, ETH_ALEN);
+                unsigned char n_s[ETH_ALEN],unsigned char n_d[ETH_ALEN]){  
+   
+
+    // https://nakryiko.com/posts/bpf-tips-printk/ not supported yet
+    // bpf_printk("origin: 0x%pM   to 0x%pM  \n \
+    // now 0x%pM   to 0x%pM   ",
+    // eth->h_source,eth->h_dest,
+    // n_s,n_d);
+
+    // not enough param number in one line
+    bpf_printk("origin- %02x:%02x:%02x:%02x:%02x:%02x",
+        eth->h_source[0],eth->h_source[1],eth->h_source[2],
+        eth->h_source[3],eth->h_source[4],eth->h_source[5]
+    );
+    bpf_printk("to----- %02x:%02x:%02x:%02x:%02x:%02x",
+        eth->h_dest[0],eth->h_dest[1],eth->h_dest[2],
+        eth->h_dest[3],eth->h_dest[4],eth->h_dest[5]
+    );
+    bpf_printk("now---- %02x:%02x:%02x:%02x:%02x:%02x",
+        n_s[0],n_s[1],n_s[2],n_s[3],n_s[4],n_s[5]
+    );
+    bpf_printk("to----- %02x:%02x:%02x:%02x:%02x:%02x",
+        n_d[0],n_d[1],n_d[2],n_d[3],n_d[4],n_d[5]
+    );
+
+    // unable to load
+    // char msg[256];
+    // int len = 0;
+    // len += sprintf(msg +len,"origin %pM to ", eth->h_source);
+    // len += sprintf(msg +len,"%pM,\n" ,eth->h_dest);
+    // len += sprintf(msg +len,"now %pM to", n_s);
+    // len += sprintf(msg +len,"%pM", n_d);
+    // bpf_printk("gen_mac %s ",msg);
+
+    // too many arguments to function call, expected 5, have 7
+    // char msg[128];
+    // bpf_snprintf(msg,sizeof(msg),"origin %pM to %pM, now %pM to %pM",eth->h_source,eth->h_dest,n_s,n_d);
+    // bpf_printk("gen_mac %s ",msg);
+
+    // unable to load
+    // char msg[128];
+    // int len = 0;
+    // len += bpf_snprintf(msg + len,sizeof(msg) - len,"origin %pM to ", eth->h_source,sizeof(eth->h_source));
+    // len += bpf_snprintf(msg + len,sizeof(msg) - len,"%pM,\n" ,eth->h_dest,sizeof(eth->h_dest));
+    // len += bpf_snprintf(msg + len,sizeof(msg) - len,"now %pM to", n_s,sizeof(n_s));
+    // len += bpf_snprintf(msg + len,sizeof(msg) - len,"%pM", n_d,sizeof(n_d));
+    // bpf_printk("gen_mac %s ",msg);
+
+    memcpy(eth->h_source, n_s, ETH_ALEN);
+    memcpy(eth->h_dest, n_d, ETH_ALEN);
     return XDP_TX;
 }
 // static __attribute__((always_inline)) int gen_mac(struct xdp_md *ctx, struct ethhdr *eth ,struct iphdr *iph){

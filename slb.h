@@ -1,4 +1,7 @@
 #include <stddef.h>
+// https://github.com/cilium/cilium/issues/368
+// dnf install glibc-devel.i686
+// #include <stdio.h>
 #include <linux/bpf.h>
 #include <linux/in.h>
 #include <linux/if_ether.h>
