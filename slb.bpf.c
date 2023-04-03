@@ -2,7 +2,7 @@
 
 hm backends[NUM_BACKENDS] = {
     {"172.19.0.2", bpf_htonl(2886926338), {0x02, 0x42, 0xac, 0x13, 0x00, 0x02}, 80},
-    {"172.19.0.3", bpf_htonl(2886926339), {0x02, 0x42, 0xac, 0x13, 0x00, 0x03}, 80}
+    // {"172.19.0.3", bpf_htonl(2886926339), {0x02, 0x42, 0xac, 0x13, 0x00, 0x03}, 80}
 };
 hm slb = {"172.19.0.5", bpf_htonl(2886926341), {0x02, 0x42, 0xac, 0x13, 0x00, 0x05}, 80};
 hm vip = {"172.19.0.10", bpf_htonl(2886926346), {0x02, 0x42, 0xac, 0x13, 0x00, 0x10}, 80};
@@ -190,8 +190,8 @@ int xdp_lb(struct xdp_md *ctx)
     // https://www.kernel.org/doc/html/latest/core-api/printk-formats.html#ipv4-addresses
     // bpf_printk("Got a TCP packet of tuple, from %pI4:%u to %pI4:%u, lenL:%u", iph->saddr,sport,iph->daddr,dport,tcp_len);
     bpf_printk("Got a TCP packet of tuple \n \
-    from %u|%pI4:%u|%u to %u|%pI4:%u|%u, \n \
-    iph->daddr: %u|%pI4,vip.ip_int: %u|%pI4 ",
+            from %u|%pI4:%u|%u to %u|%pI4:%u|%u, \n \
+            iph->daddr: %u|%pI4, vip.ip_int: %u|%pI4 ",
     sip,&sip,tcph->source,sport,dip,&dip,tcph->dest,dport,
     iph->daddr,&(iph->daddr),(vip.ip_int),&((vip.ip_int)));
     if (tcp_len > TCP_MAX_BITS){
@@ -259,12 +259,16 @@ int xdp_lb(struct xdp_md *ctx)
         iph->daddr,&iph->daddr,nat_p->port,tcph->dest);
     }
     // action = gen_mac(ctx,eth,iph);
+    __sum16	ip_sum = iph->check;
     iph->check = iph_csum(iph);
+    __sum16	tcp_sum = tcph->check;
     // here is the problem
     // return XDP_PASS;
     tcph->check = ipv4_l4_csum(tcph, tcp_len, iph,data_end);
     // return action;
-    return XDP_TX;
+    bpf_printk("ip_sum from %u to %u,tcp_sum from %u to %u,action:%u",
+       ip_sum,iph->check,tcp_sum,tcph->check,action);
+    return action;
 }
 
 char _license[] SEC("license") = "GPL";

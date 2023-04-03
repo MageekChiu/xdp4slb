@@ -22,7 +22,9 @@
 #undef AF_INET
 #define AF_INET 2
 
-#define NUM_BACKENDS 2
+// convenient for debugging
+#define NUM_BACKENDS 1
+// #define NUM_BACKENDS 2
 typedef struct host_meta {
     char *ip;
     __u32 ip_int;
@@ -79,10 +81,10 @@ ipv4_l4_csum(void* data_start, __u32 data_size, struct iphdr* iph,void *data_end
     __u16 *buf = (void *)data_start;
 
     // Compute pseudo-header checksum
-    csum_buffer += (__u32)iph->saddr;
-    csum_buffer += (__u32)(iph->saddr >> 16);
-    csum_buffer += (__u32)iph->daddr;
-    csum_buffer += (__u32)(iph->daddr >> 16);
+    csum_buffer += (__u16)iph->saddr;
+    csum_buffer += (__u16)(iph->saddr >> 16);
+    csum_buffer += (__u16)iph->daddr;
+    csum_buffer += (__u16)(iph->daddr >> 16);
     csum_buffer += (__u32)iph->protocol << 8;
     csum_buffer += data_size;
 
