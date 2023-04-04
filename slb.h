@@ -48,6 +48,7 @@ typedef struct conntrack_entry ce;
 #define ARP_MAP_SIZE 1024
 #define SNAT_MAP_SIZE 1024
 #define DNAT_MAP_SIZE 1024
+#define BACKEND_MAP_SIZE 1024
 
 
 enum LB_ALG{

@@ -23,12 +23,20 @@ struct {
     __type(value, ce);
 } dnat_map SEC(".maps");
 
+// client ip and the corresponding mac
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, ARP_MAP_SIZE);
     __type(key, __u32);
     __type(value, unsigned char [ETH_ALEN]);
 } arp_map SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, BACKEND_MAP_SIZE);
+    __type(key, ce);
+    __type(value, hm);
+} back_map SEC(".maps");
 
 __attribute__((always_inline))
 static void print_mac(char *prefix ,unsigned char mac[ETH_ALEN]){
@@ -246,12 +254,17 @@ int xdp_lb(struct xdp_md *ctx)
             return XDP_DROP;
         }
         // Choose a backend server to send the request to; 
-        hm *rs = get_backend(random);
+        // within a lifetime of tcp conn, backend must be the same
         ce nat_key = {
             // keep the original net edian
             .ip = iph->saddr,
             .port = tcph->source
         };
+        hm *rs = bpf_map_lookup_elem(&back_map, &nat_key);
+        if (rs == NULL){
+            rs = get_backend(random);
+            bpf_map_update_elem(&back_map, &nat_key, rs, map_flags); 
+        }
         ce *nat_p = bpf_map_lookup_elem(&snat_map, &nat_key);
         if (nat_p == NULL) {
             __u32 n_ip = get_src_ip();
