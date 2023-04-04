@@ -23,8 +23,8 @@
 #define AF_INET 2
 
 // convenient for debugging
-#define NUM_BACKENDS 1
-// #define NUM_BACKENDS 2
+// #define NUM_BACKENDS 1
+#define NUM_BACKENDS 2
 typedef struct host_meta {
     char *ip;
     __u32 ip_int;
@@ -43,6 +43,7 @@ struct conntrack_entry {
 } __attribute__((packed));
 typedef struct conntrack_entry ce;
 
+#define ARP_MAP_SIZE 1024
 #define SNAT_MAP_SIZE 1024
 #define DNAT_MAP_SIZE 1024
 
