@@ -131,7 +131,7 @@ static int gen_mac(struct xdp_md *ctx, struct ethhdr *eth ,struct iphdr *iph,
 // todo random port within[30100,60900]
 __attribute__((always_inline))
 static __u16 get_src_port(){
-    bpf_printk("NAT PORT");
+    // bpf_printk("NAT PORT");
 
     // static __u16 cur = 0;
     // __u16 t = (__u16)(cur++ + NAT_PORT_MIN);
@@ -143,21 +143,17 @@ static __u16 get_src_port(){
     // // bpf_printk("NAT cur:%x ,t:%x ",cur,t);
     // // bpf_printk("NAT cur:%x ,t:%x ,r:%x",cur,t,r);
     // return r;
-
+    
     __u32 port = bpf_get_prandom_u32();
-    __u16 p = (__be16)55555;
-    if(port >= NAT_PORT_MIN && port <= NAT_PORT_MAX ){
-        p = (__be16)port;
-    }
-    __u16 r = p;
-    // __u16 r = bpf_ntohs(p);
-    bpf_printk("NAT PORT cur:%x ,p:%x ,r:%x",port,p,r);
+    __u32 p = (port % NAT_PORT_RANGE) + NAT_PORT_MIN;
+    __u16 r = bpf_ntohs((__u16)p);
+    bpf_printk("NAT PORT cur:%u ,p:%u ,r:%u",port,p,r);
     return r;
 }
 
 __attribute__((always_inline))
 static __u32 get_src_ip(){
-    bpf_printk("NAT IP %x",slb.ip_int);
+    bpf_printk("NAT IP %u",slb.ip_int);
     return slb.ip_int;
 }
 

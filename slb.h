@@ -32,8 +32,10 @@ typedef struct host_meta {
     __u16 port;
 } hm;
 
+#define MAX_U_32_INT 4294967295.0
 #define NAT_PORT_MIN 30100
 #define NAT_PORT_MAX 60900
+#define NAT_PORT_RANGE (NAT_PORT_MAX - NAT_PORT_MIN)
 
 __u32 map_flags = BPF_ANY;
 
