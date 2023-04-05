@@ -14,13 +14,17 @@
 #include <bpf/bpf_helpers.h>
 
 
-#define ETH_P_IP	0x0800		
-#define ETH_ALEN 6
+#ifndef memcpy
+#define memcpy(dest, src, n) __builtin_memcpy((dest), (src), (n))
+#endif
 
+
+// #define ETH_P_IP	0x0800		
+// #define ETH_ALEN 6
+// #undef AF_INET
+// #define AF_INET 2
 #define TCP_MAX_BITS 1480
 
-#undef AF_INET
-#define AF_INET 2
 
 // convenient for debugging
 // #define NUM_BACKENDS 1
@@ -32,19 +36,20 @@ typedef struct host_meta {
     __u16 port;
 } hm;
 
-#define MAX_U_32_INT 4294967295.0
-#define NAT_PORT_MIN 30100
-#define NAT_PORT_MAX 60900
-#define NAT_PORT_RANGE (NAT_PORT_MAX - NAT_PORT_MIN)
-
-__u32 map_flags = BPF_ANY;
-
 struct conntrack_entry {
     __u32 ip;
     __u16 port;
 } __attribute__((packed));
 typedef struct conntrack_entry ce;
 
+
+#define MAX_U_32_INT 4294967295.0
+#define NAT_PORT_MIN 30100
+#define NAT_PORT_MAX 60900
+#define NAT_PORT_RANGE (NAT_PORT_MAX - NAT_PORT_MIN)
+
+
+__u32 map_flags = BPF_ANY;
 #define ARP_MAP_SIZE 1024
 #define SNAT_MAP_SIZE 1024
 #define DNAT_MAP_SIZE 1024
@@ -54,13 +59,12 @@ typedef struct conntrack_entry ce;
 enum LB_ALG{
     random, round_robin
 };
+// enum LB_ALG cur_lb_alg = random;
+enum LB_ALG cur_lb_alg = round_robin;
 
-#ifndef memcpy
-#define memcpy(dest, src, n) __builtin_memcpy((dest), (src), (n))
-#endif
 
-static __attribute__((always_inline)) __u16
-csum_fold_helper(__u64 csum)
+__attribute__((always_inline))
+static  __u16 csum_fold_helper(__u64 csum)
 {
     int i;
 #pragma unroll
@@ -72,15 +76,15 @@ csum_fold_helper(__u64 csum)
     return ~csum;
 }
 
-static __attribute__((always_inline)) __u16
-iph_csum(struct iphdr *iph){
+__attribute__((always_inline))
+static __u16 iph_csum(struct iphdr *iph){
     iph->check = 0;
     unsigned long long csum = bpf_csum_diff(0, 0, (unsigned int *)iph, sizeof(struct iphdr), 0);
     return csum_fold_helper(csum);
 }
 
-static __attribute__((always_inline)) __u16 
-ipv4_l4_csum(void* data_start, __u32 data_size, struct iphdr* iph,void *data_end) {
+__attribute__((always_inline))
+static  __u16 ipv4_l4_csum(void* data_start, __u32 data_size, struct iphdr* iph,void *data_end) {
     __u64 csum_buffer = 0;
     __u16 *buf = (void *)data_start;
 
@@ -92,7 +96,7 @@ ipv4_l4_csum(void* data_start, __u32 data_size, struct iphdr* iph,void *data_end
     csum_buffer += (__u32)iph->protocol << 8;
     csum_buffer += data_size;
 
-    // Compute checksum on udp header + payload
+    // Compute checksum on udp/tcp header + payload
     for (int i = 0; i < TCP_MAX_BITS; i += 2) {
         if ((void *)(buf + 1) > data_end) {
             break;

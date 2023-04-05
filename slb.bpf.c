@@ -38,6 +38,7 @@ struct {
     __type(value, hm);
 } back_map SEC(".maps");
 
+
 __attribute__((always_inline))
 static void print_mac(char *prefix ,unsigned char mac[ETH_ALEN]){
     bpf_printk("%s %02x:%02x:%02x:%02x:%02x:%02x",
@@ -48,8 +49,6 @@ static void print_mac(char *prefix ,unsigned char mac[ETH_ALEN]){
 __attribute__((always_inline))
 static int gen_mac(struct xdp_md *ctx, struct ethhdr *eth ,struct iphdr *iph,
                 unsigned char n_s[ETH_ALEN],unsigned char n_d[ETH_ALEN]){  
-   
-
     // https://nakryiko.com/posts/bpf-tips-printk/ not supported yet
     // bpf_printk("origin: 0x%pM   to 0x%pM  \n \
     // now 0x%pM   to 0x%pM   ",
@@ -99,6 +98,7 @@ static int gen_mac(struct xdp_md *ctx, struct ethhdr *eth ,struct iphdr *iph,
     memcpy(eth->h_dest, n_d, ETH_ALEN);
     return XDP_TX;
 }
+
 // static __attribute__((always_inline)) int gen_mac(struct xdp_md *ctx, struct ethhdr *eth ,struct iphdr *iph){
 //     struct bpf_fib_lookup fib_params = {};
 // 	fib_params.family	= AF_INET;
@@ -169,14 +169,14 @@ static __u32 get_src_ip(){
 // todo implement different load balancing algorithm
 __attribute__((always_inline))
 static hm *lb_rr(){
-    static int count = 0;
-    int backend_idx = count++ % NUM_BACKENDS;
+    static __u32 count = 0;
+    __u32 backend_idx = count++ % NUM_BACKENDS;
     return &(backends[backend_idx]);
 }
 
 __attribute__((always_inline)) 
 static hm *lb_rand(){
-    int backend_idx = bpf_get_prandom_u32() % NUM_BACKENDS;
+    __u32 backend_idx = bpf_get_prandom_u32() % NUM_BACKENDS;
     return &(backends[backend_idx]);  
 }
 
@@ -262,7 +262,7 @@ int xdp_lb(struct xdp_md *ctx)
         };
         hm *rs = bpf_map_lookup_elem(&back_map, &nat_key);
         if (rs == NULL){
-            rs = get_backend(random);
+            rs = get_backend(cur_lb_alg);
             bpf_map_update_elem(&back_map, &nat_key, rs, map_flags); 
         }
         ce *nat_p = bpf_map_lookup_elem(&snat_map, &nat_key);
