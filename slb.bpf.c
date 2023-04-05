@@ -7,8 +7,7 @@ hm backends[NUM_BACKENDS] = {
 hm slb = {"172.19.0.5", bpf_htonl(2886926341), {0x02, 0x42, 0xac, 0x13, 0x00, 0x05}, bpf_htons(80)};
 hm vip = {"172.19.0.10", bpf_htonl(2886926346), {0x02, 0x42, 0xac, 0x13, 0x00, 0x10}, bpf_htons(80)};
 
-// unsigned char client_mac[ETH_ALEN] = {0x0, 0x0, 0x0, 0x0, 0x0, 0x0};
-
+// client ip:port -> slb ip:port
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, SNAT_MAP_SIZE);
@@ -16,6 +15,7 @@ struct {
     __type(value, ce);
 } snat_map SEC(".maps");
 
+// slb ip:port -> client ip:port
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, DNAT_MAP_SIZE);
@@ -23,7 +23,7 @@ struct {
     __type(value, ce);
 } dnat_map SEC(".maps");
 
-// client ip and the corresponding mac
+// client ip -> the corresponding mac
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, ARP_MAP_SIZE);
@@ -31,6 +31,7 @@ struct {
     __type(value, unsigned char [ETH_ALEN]);
 } arp_map SEC(".maps");
 
+// client ip:port -> the corresponding backend
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, BACKEND_MAP_SIZE);
@@ -134,6 +135,24 @@ static int gen_mac(struct xdp_md *ctx, struct ethhdr *eth ,struct iphdr *iph,
 // 	}
 //     return action;
 // }
+
+__attribute__((always_inline))
+static void l4_ingress(struct iphdr *iph, struct tcphdr *tcph, ce *src, hm *dst){
+    // net edian allready
+    iph->saddr = (src->ip);
+    tcph->source = (src->port);
+    iph->daddr = (dst->ip_int);
+    tcph->dest = (dst->port);
+}
+
+__attribute__((always_inline))
+static void l4_egress(struct iphdr *iph, struct tcphdr *tcph, hm *src, ce *dst){
+    // net edian allready
+    iph->saddr = (src->ip_int);
+    tcph->source = (src->port);
+    iph->daddr = (dst->ip);
+    tcph->dest = (dst->port);
+}
 
 
 // todo random port within[30100,60900]
@@ -282,13 +301,9 @@ int xdp_lb(struct xdp_md *ctx)
             // arp table       
             bpf_map_update_elem(&arp_map, &(iph->saddr), eth->h_source, map_flags);       
         }
-        // net edian allready
-        iph->saddr = (nat_p->ip);
-        tcph->source = (nat_p->port);
-        iph->daddr = (rs->ip_int);
-        tcph->dest = (rs->port);
+        l4_ingress(iph,tcph,nat_p,rs);
         action = gen_mac(ctx,eth,iph,slb.mac_addr,rs->mac_addr);
-        bpf_printk("Forward a nat packet of tuple\n \
+        bpf_printk("Ingress a nat packet of tuple\n \
         from %u|%pI4n:%u|%u to %u|%pI4n:%u|%u,", 
         iph->saddr,&(iph->saddr),tcph->source,bpf_ntohs(tcph->source),
         iph->daddr,&(iph->daddr),tcph->dest,bpf_ntohs(tcph->dest));
@@ -304,17 +319,14 @@ int xdp_lb(struct xdp_md *ctx)
             bpf_printk("No such connection from client before,IP");
             return XDP_PASS;
         }
-        iph->saddr = (vip.ip_int);
-        tcph->source = (vip.port);
-        iph->daddr = (nat_p->ip);
-        tcph->dest = (nat_p->port);
+        l4_egress(iph,tcph,&vip,nat_p);
         unsigned char *mac_addr = bpf_map_lookup_elem(&arp_map, &iph->daddr);
         if (!mac_addr) {
             bpf_printk("No such connection from client before,MAC");
             return XDP_PASS;
         }
         action = gen_mac(ctx,eth,iph,vip.mac_addr,mac_addr);
-        bpf_printk("Send a nat packet of tuple\n \
+        bpf_printk("Egress a nat packet of tuple\n \
         from %u|%pI4n:%u|%u to %u|%pI4n:%u|%u,", 
         iph->saddr,&(iph->saddr),tcph->source,bpf_ntohs(tcph->source),
         iph->daddr,&(iph->daddr),tcph->dest,bpf_ntohs(tcph->dest));
