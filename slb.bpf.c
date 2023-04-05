@@ -141,22 +141,22 @@ __attribute__((always_inline))
 static __u16 get_src_port(){
     // bpf_printk("NAT PORT");
 
-    // static __u16 cur = 0;
-    // __u16 t = (__u16)(cur++ + NAT_PORT_MIN);
-    // if(t == NAT_PORT_MAX){
-    //     cur = 0;
-    // }
-    // __u16 r = bpf_htons(t);
-    // bpf_printk("NAT r:%x ",r);
-    // // bpf_printk("NAT cur:%x ,t:%x ",cur,t);
-    // // bpf_printk("NAT cur:%x ,t:%x ,r:%x",cur,t,r);
-    // return r;
-    
-    __u32 port = bpf_get_prandom_u32();
-    __u32 p = (port % NAT_PORT_RANGE) + NAT_PORT_MIN;
-    __u16 r = bpf_ntohs((__u16)p);
-    bpf_printk("NAT PORT cur:%u ,p:%u ,r:%u",port,p,r);
+    static __u16 cur = 0;
+    __u16 t = (__u16)(cur++ + NAT_PORT_MIN);
+    if(t == NAT_PORT_MAX){
+        cur = 0;
+    }
+    __u16 r = bpf_htons(t);
+    // bpf_printk("NAT r:%u ",r);
+    // bpf_printk("NAT cur:%u ,t:%u ",cur,t);
+    bpf_printk("NAT cur:%u ,t:%u ,r:%u",cur,t,r);
     return r;
+    
+    // __u32 port = bpf_get_prandom_u32();
+    // __u32 p = (port % NAT_PORT_RANGE) + NAT_PORT_MIN;
+    // __u16 r = bpf_ntohs((__u16)p);
+    // bpf_printk("NAT PORT cur:%u ,p:%u ,r:%u",port,p,r);
+    // return r;
 }
 
 __attribute__((always_inline))
