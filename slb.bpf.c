@@ -9,7 +9,7 @@ hm vip = {"172.19.0.10", bpf_htonl(2886926346), {0x02, 0x42, 0xac, 0x13, 0x00, 0
 
 // client ip:port -> slb ip:port
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, SNAT_MAP_SIZE);
     __type(key, ce);
     __type(value, ce);
@@ -17,7 +17,7 @@ struct {
 
 // slb ip:port -> client ip:port
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, DNAT_MAP_SIZE);
     __type(key, ce);
     __type(value, ce);
@@ -25,7 +25,7 @@ struct {
 
 // client ip -> the corresponding mac
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, ARP_MAP_SIZE);
     __type(key, __u32);
     __type(value, unsigned char [ETH_ALEN]);
@@ -33,7 +33,7 @@ struct {
 
 // client ip:port -> the corresponding backend
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, BACKEND_MAP_SIZE);
     __type(key, ce);
     __type(value, hm);
@@ -168,7 +168,7 @@ static __u16 get_src_port(){
     __u16 r = bpf_htons(t);
     // bpf_printk("NAT r:%u ",r);
     // bpf_printk("NAT cur:%u ,t:%u ",cur,t);
-    bpf_printk("NAT cur:%u ,t:%u ,r:%u",cur,t,r);
+    bpf_printk("NAT PORT cur:%u ,t:%u ,r:%u",cur,t,r);
     return r;
     
     // __u32 port = bpf_get_prandom_u32();
@@ -187,6 +187,15 @@ static __u32 get_src_ip(){
 
 // todo implement different load balancing algorithm
 __attribute__((always_inline))
+static hm *lb_hash(ce *nat_key){
+    // with hash, we dobn't need to sync session amongst slb intances
+    __u32 hash = ((nat_key->ip >> 7) & nat_key->port >> 3);
+    bpf_printk("LB hash %u",hash);
+    __u32 backend_idx = hash % NUM_BACKENDS;
+    return &(backends[backend_idx]);
+}
+
+__attribute__((always_inline))
 static hm *lb_rr(){
     static __u32 count = 0;
     __u32 backend_idx = count++ % NUM_BACKENDS;
@@ -200,10 +209,12 @@ static hm *lb_rand(){
 }
 
 __attribute__((always_inline)) 
-static hm *get_backend(enum LB_ALG alg){
+static hm *get_backend(enum LB_ALG alg,ce *nat_key){
     switch (alg){
         case round_robin:
             return lb_rr();   
+        case n_hash:
+            return lb_hash(nat_key);
         case random: 
         default:
             return lb_rand();
@@ -281,7 +292,7 @@ int xdp_lb(struct xdp_md *ctx)
         };
         hm *rs = bpf_map_lookup_elem(&back_map, &nat_key);
         if (rs == NULL){
-            rs = get_backend(cur_lb_alg);
+            rs = get_backend(cur_lb_alg,&nat_key);
             bpf_map_update_elem(&back_map, &nat_key, rs, map_flags); 
         }
         ce *nat_p = bpf_map_lookup_elem(&snat_map, &nat_key);

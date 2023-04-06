@@ -50,17 +50,20 @@ typedef struct conntrack_entry ce;
 
 
 __u32 map_flags = BPF_ANY;
-#define ARP_MAP_SIZE 1024
-#define SNAT_MAP_SIZE 1024
-#define DNAT_MAP_SIZE 1024
-#define BACKEND_MAP_SIZE 1024
+#define ARP_MAP_SIZE 4096
+#define SNAT_MAP_SIZE 4096
+#define DNAT_MAP_SIZE 4096
+#define BACKEND_MAP_SIZE 4096
 
 
 enum LB_ALG{
-    random, round_robin
+    random, 
+    round_robin, 
+    n_hash,
 };
 // enum LB_ALG cur_lb_alg = random;
-enum LB_ALG cur_lb_alg = round_robin;
+// enum LB_ALG cur_lb_alg = round_robin;
+enum LB_ALG cur_lb_alg = n_hash;
 
 
 __attribute__((always_inline))
