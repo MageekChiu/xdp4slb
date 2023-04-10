@@ -1,8 +1,14 @@
-FROM debian:bullseye
+FROM fedora:37
 # modify source to get faster installation
-RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list \
-    && apt-get update -y && apt-get upgrade -y \
-    && apt install -y procps bpftool iproute2 net-tools telnet kmod curl tcpdump
+RUN sed -e 's|^metalink=|#metalink=|g' \
+         -e 's|^#baseurl=http://download.example/pub/fedora/linux|baseurl=https://mirrors.tuna.tsinghua.edu.cn/fedora|g' \
+         -i.bak \
+         /etc/yum.repos.d/fedora.repo \
+         /etc/yum.repos.d/fedora-modular.repo \
+         /etc/yum.repos.d/fedora-updates.repo \
+         /etc/yum.repos.d/fedora-updates-modular.repo 
+RUN dnf makecache 
+RUN dnf install -y file binutils bpftool iproute2 
 
 WORKDIR /tmp/
-COPY slb.bpf.o /tmp/
+COPY src/slb /tmp/

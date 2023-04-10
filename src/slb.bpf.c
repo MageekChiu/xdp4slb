@@ -1,11 +1,84 @@
 #include "slb.h"
+#include "vmlinux.h"
+#include <bpf/bpf_tracing.h>
+#include <bpf/bpf_endian.h>
+#include <bpf/bpf_helpers.h>
 
-hm backends[NUM_BACKENDS] = {
+
+// convenient for debugging
+// #define NUM_BACKENDS 1
+#define NUM_BACKENDS 2
+struct host_meta {
+    char *ip;
+    __u32 ip_int;
+    unsigned char mac_addr[ETH_ALEN];
+    __u16 port;
+};
+
+struct conntrack_entry {
+    __u32 ip;
+    __u16 port;
+} __attribute__((packed));
+typedef struct conntrack_entry ce;
+
+__u32 map_flags = BPF_ANY;
+
+__attribute__((always_inline))
+static  __u16 csum_fold_helper(__u64 csum){
+    int i;
+#pragma unroll
+    for (i = 0; i < 4; i++)
+    {
+        if (csum >> 16)
+            csum = (csum & 0xffff) + (csum >> 16);
+    }
+    return ~csum;
+}
+
+__attribute__((always_inline))
+static __u16 iph_csum(struct iphdr *iph){
+    iph->check = 0;
+    unsigned long long csum = bpf_csum_diff(0, 0, (unsigned int *)iph, sizeof(struct iphdr), 0);
+    return csum_fold_helper(csum);
+}
+
+__attribute__((always_inline))
+static  __u16 ipv4_l4_csum(void* data_start, __u32 data_size, struct iphdr* iph,void *data_end) {
+    __u64 csum_buffer = 0;
+    __u16 *buf = (void *)data_start;
+
+    // Compute pseudo-header checksum
+    csum_buffer += (__u16)iph->saddr;
+    csum_buffer += (__u16)(iph->saddr >> 16);
+    csum_buffer += (__u16)iph->daddr;
+    csum_buffer += (__u16)(iph->daddr >> 16);
+    csum_buffer += (__u32)iph->protocol << 8;
+    csum_buffer += data_size;
+
+    // Compute checksum on udp/tcp header + payload
+    for (int i = 0; i < TCP_MAX_BITS; i += 2) {
+        if ((void *)(buf + 1) > data_end) {
+            break;
+        }
+        csum_buffer += *buf;
+        buf++;
+    }
+    if ((void *)buf + 1 <= data_end) {
+    // In case payload is not 2 bytes aligned
+        csum_buffer += *(__u8 *)buf;
+    }
+
+    return csum_fold_helper(csum_buffer);
+}
+
+
+static struct host_meta backends[NUM_BACKENDS] = {
     {"172.19.0.2", bpf_htonl(2886926338), {0x02, 0x42, 0xac, 0x13, 0x00, 0x02}, bpf_htons(80)},
     {"172.19.0.3", bpf_htonl(2886926339), {0x02, 0x42, 0xac, 0x13, 0x00, 0x03}, bpf_htons(80)}
 };
-hm slb = {"172.19.0.5", bpf_htonl(2886926341), {0x02, 0x42, 0xac, 0x13, 0x00, 0x05}, bpf_htons(80)};
-hm vip = {"172.19.0.10", bpf_htonl(2886926346), {0x02, 0x42, 0xac, 0x13, 0x00, 0x10}, bpf_htons(80)};
+static struct host_meta slb = {"172.19.0.5", bpf_htonl(2886926341), {0x02, 0x42, 0xac, 0x13, 0x00, 0x05}, bpf_htons(80)};
+static struct host_meta vip = {"172.19.0.10", bpf_htonl(2886926346), {0x02, 0x42, 0xac, 0x13, 0x00, 0x10}, bpf_htons(80)};
+
 
 // client ip:port -> slb ip:port
 struct {
@@ -36,7 +109,7 @@ struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, BACKEND_MAP_SIZE);
     __type(key, ce);
-    __type(value, hm);
+    __type(value, struct host_meta);
 } back_map SEC(".maps");
 
 
@@ -137,7 +210,7 @@ static int gen_mac(struct xdp_md *ctx, struct ethhdr *eth ,struct iphdr *iph,
 // }
 
 __attribute__((always_inline))
-static void l4_ingress(struct iphdr *iph, struct tcphdr *tcph, ce *src, hm *dst){
+static void l4_ingress(struct iphdr *iph, struct tcphdr *tcph, ce *src, struct host_meta *dst){
     // net edian allready
     iph->saddr = (src->ip);
     tcph->source = (src->port);
@@ -146,7 +219,7 @@ static void l4_ingress(struct iphdr *iph, struct tcphdr *tcph, ce *src, hm *dst)
 }
 
 __attribute__((always_inline))
-static void l4_egress(struct iphdr *iph, struct tcphdr *tcph, hm *src, ce *dst){
+static void l4_egress(struct iphdr *iph, struct tcphdr *tcph, struct host_meta *src, ce *dst){
     // net edian allready
     iph->saddr = (src->ip_int);
     tcph->source = (src->port);
@@ -187,7 +260,7 @@ static __u32 get_src_ip(){
 
 // todo implement different load balancing algorithm
 __attribute__((always_inline))
-static hm *lb_hash(ce *nat_key){
+static struct host_meta *lb_hash(ce *nat_key){
     // with hash, we dobn't need to sync session amongst slb intances
     __u32 hash = ((nat_key->ip >> 7) & nat_key->port >> 3);
     bpf_printk("LB hash %u",hash);
@@ -196,26 +269,26 @@ static hm *lb_hash(ce *nat_key){
 }
 
 __attribute__((always_inline))
-static hm *lb_rr(){
+static struct host_meta *lb_rr(){
     static __u32 count = 0;
     __u32 backend_idx = count++ % NUM_BACKENDS;
     return &(backends[backend_idx]);
 }
 
 __attribute__((always_inline)) 
-static hm *lb_rand(){
+static struct host_meta *lb_rand(){
     __u32 backend_idx = bpf_get_prandom_u32() % NUM_BACKENDS;
     return &(backends[backend_idx]);  
 }
 
 __attribute__((always_inline)) 
-static hm *get_backend(enum LB_ALG alg,ce *nat_key){
+static struct host_meta *get_backend(enum LB_ALG alg,ce *nat_key){
     switch (alg){
-        case round_robin:
+        case lb_round_robin:
             return lb_rr();   
-        case n_hash:
+        case lb_n_hash:
             return lb_hash(nat_key);
-        case random: 
+        case lb_random: 
         default:
             return lb_rand();
     }
@@ -290,7 +363,7 @@ int xdp_lb(struct xdp_md *ctx)
             .ip = iph->saddr,
             .port = tcph->source
         };
-        hm *rs = bpf_map_lookup_elem(&back_map, &nat_key);
+        struct host_meta *rs = bpf_map_lookup_elem(&back_map, &nat_key);
         if (rs == NULL){
             rs = get_backend(cur_lb_alg,&nat_key);
             bpf_map_update_elem(&back_map, &nat_key, rs, map_flags); 
