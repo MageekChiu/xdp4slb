@@ -1,14 +1,7 @@
+# 这里修改镜像是因为我的宿主机 fedora:37 的 libc 版本是 2.36，
+# debian:bullseye 对应的版本是 2.31 ，不能直接运行宿主机编译的可执行文件。
 FROM fedora:37
-# modify source to get faster installation
-RUN sed -e 's|^metalink=|#metalink=|g' \
-         -e 's|^#baseurl=http://download.example/pub/fedora/linux|baseurl=https://mirrors.tuna.tsinghua.edu.cn/fedora|g' \
-         -i.bak \
-         /etc/yum.repos.d/fedora.repo \
-         /etc/yum.repos.d/fedora-modular.repo \
-         /etc/yum.repos.d/fedora-updates.repo \
-         /etc/yum.repos.d/fedora-updates-modular.repo 
-RUN dnf makecache 
-RUN dnf install -y file binutils bpftool iproute2 
+RUN dnf install -y file binutils procps bpftool iproute net-tools telnet kmod curl tcpdump
 
 WORKDIR /tmp/
 COPY src/slb /tmp/

@@ -114,8 +114,10 @@ int main(int argc, char **argv){
 		fprintf(stderr, "Failed to find nic %s \n",nic);
 		goto cleanup;
 	}
-	int prog_fd = bpf_program__fd(skel->progs.xdp_lb);
-	err = bpf_xdp_attach(ifindex, prog_fd, XDP_FLAGS,NULL);
+	// int prog_fd = bpf_program__fd(skel->progs.xdp_lb);
+	// err = bpf_xdp_attach(ifindex, prog_fd, XDP_FLAGS,NULL);
+	// better way to attach
+	bpf_program__attach_xdp(skel->progs.xdp_lb,ifindex);
 	if (err) {
 		fprintf(stderr, "Failed to attach program to intraface\n");
 		goto cleanup;

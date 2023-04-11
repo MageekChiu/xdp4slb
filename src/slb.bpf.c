@@ -21,8 +21,6 @@ struct conntrack_entry {
 } __attribute__((packed));
 typedef struct conntrack_entry ce;
 
-__u32 map_flags = BPF_ANY;
-
 __attribute__((always_inline))
 static  __u16 csum_fold_helper(__u64 csum){
     int i;
@@ -72,11 +70,21 @@ static  __u16 ipv4_l4_csum(void* data_start, __u32 data_size, struct iphdr* iph,
 }
 
 
+__u32 map_flags = BPF_ANY;
+
+// enum LB_ALG cur_lb_alg = lb_random;
+// enum LB_ALG cur_lb_alg = lb_round_robin;
+enum LB_ALG cur_lb_alg = lb_n_hash;
+
 static struct host_meta backends[NUM_BACKENDS] = {
     {"172.19.0.2", bpf_htonl(2886926338), {0x02, 0x42, 0xac, 0x13, 0x00, 0x02}, bpf_htons(80)},
     {"172.19.0.3", bpf_htonl(2886926339), {0x02, 0x42, 0xac, 0x13, 0x00, 0x03}, bpf_htons(80)}
 };
 static struct host_meta slb = {"172.19.0.5", bpf_htonl(2886926341), {0x02, 0x42, 0xac, 0x13, 0x00, 0x05}, bpf_htons(80)};
+// On fedora 37:"ifconfig eth0:0 172.19.0.10/32 hw ether 02:42:ac:13:00:10 up" would change mac addr of eth0, 
+// cause interface aliases are not created using "eth0:0"(deprecated in modern linux distributions)
+// so we have to reuse mac addr and use "ifconfig eth0:0 172.19.0.10/32 up"
+// However,reusing mac addr would also cause problem(arp and so on)
 static struct host_meta vip = {"172.19.0.10", bpf_htonl(2886926346), {0x02, 0x42, 0xac, 0x13, 0x00, 0x10}, bpf_htons(80)};
 
 

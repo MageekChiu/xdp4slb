@@ -26,6 +26,4 @@ enum LB_ALG{
     lb_round_robin, 
     lb_n_hash,
 };
-// enum LB_ALG cur_lb_alg = lb_random;
-// enum LB_ALG cur_lb_alg = lb_round_robin;
-enum LB_ALG cur_lb_alg = lb_n_hash;
+
