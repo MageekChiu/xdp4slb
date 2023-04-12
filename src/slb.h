@@ -29,3 +29,13 @@ enum LB_ALG{
     lb_n_hash = 3,
 };
 
+typedef unsigned int __u32;
+typedef short unsigned int __u16;
+typedef unsigned char __u8;
+
+struct host_meta {
+    char *ip;
+    __u32 ip_int;
+    __u8 mac_addr[ETH_ALEN];
+    __u16 port;
+}__attribute__((packed));

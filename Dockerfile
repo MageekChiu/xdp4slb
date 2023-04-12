@@ -11,3 +11,4 @@ RUN apt-get update -y && apt-get upgrade -y \
 
 WORKDIR /tmp/
 COPY src/slb /tmp/
+COPY slb.conf /tmp/

@@ -5,13 +5,6 @@
 #include <bpf/bpf_helpers.h>
 
 
-struct host_meta {
-    char *ip;
-    __u32 ip_int;
-    unsigned char mac_addr[ETH_ALEN];
-    __u16 port;
-}__attribute__((packed));
-
 struct conntrack_entry {
     __u32 ip;
     __u16 port;
@@ -72,19 +65,23 @@ __u32 map_flags = BPF_ANY;
 const volatile enum LB_ALG cur_lb_alg = lb_n_hash;
 
 const volatile __u32 NUM_BACKENDS  = 2;
+
 const static __u8 *index = 0;
+
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, MAX_BACKEND);
     __type(key, __u32);
     __type(value, struct host_meta);
 } backends_map SEC(".maps");
+
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, 1);
     __type(key, __u8);
     __type(value, struct host_meta);
 } slb_map SEC(".maps");
+
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, 1);
