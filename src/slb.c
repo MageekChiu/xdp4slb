@@ -18,18 +18,18 @@ static struct env {
 	char *interface;
 } env;
 
-const char *argp_program_version = "slb 0.1";
+const char *argp_program_version = "slb 0.2";
 const char *argp_program_bug_address = "<mageekchiu@gmail.com>";
 const char argp_program_doc[] =
 "A software load balancing implemention based on ebpf/xdp.\n"
 "\n"
 "Not Production Ready! \n"
 "\n"
-"USAGE: ./slb [-v]\n";
+"USAGE: ./slb [-v] [-i nic]\n";
 
 static const struct argp_option opts[] = {
 	{ "verbose", 'v', NULL, 0, "Verbose debug output" },
-	{ "interface", 'i', "INTERFACE", 0, "interface to attach" },
+	{ "interface", 'i', "nic", 0, "Interface to attach, default:eth0" },
 	{},
 };
 
@@ -82,6 +82,9 @@ int main(int argc, char **argv){
 	err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
 	if (err)
 		return err;
+	if(!env.interface){
+		env.interface = "eth0";
+	}
 	fprintf(stderr, "interface %s\n",env.interface);
 
 	/* Cleaner handling of Ctrl-C */
