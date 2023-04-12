@@ -5,15 +5,12 @@
 #include <bpf/bpf_helpers.h>
 
 
-// convenient for debugging
-// #define NUM_BACKENDS 1
-#define NUM_BACKENDS 2
 struct host_meta {
     char *ip;
     __u32 ip_int;
     unsigned char mac_addr[ETH_ALEN];
     __u16 port;
-};
+}__attribute__((packed));
 
 struct conntrack_entry {
     __u32 ip;
@@ -74,19 +71,26 @@ __u32 map_flags = BPF_ANY;
 
 const volatile enum LB_ALG cur_lb_alg = lb_n_hash;
 
-static struct host_meta backends[NUM_BACKENDS] = {
-    {"172.19.0.2", bpf_htonl(2886926338), {0x02, 0x42, 0xac, 0x13, 0x00, 0x02}, bpf_htons(80)},
-    {"172.19.0.3", bpf_htonl(2886926339), {0x02, 0x42, 0xac, 0x13, 0x00, 0x03}, bpf_htons(80)}
-};
-static struct host_meta slb = {"172.19.0.5", bpf_htonl(2886926341), {0x02, 0x42, 0xac, 0x13, 0x00, 0x05}, bpf_htons(80)};
-// On fedora 37:"ifconfig eth0:0 172.19.0.10/32 hw ether 02:42:ac:13:00:10 up" would change mac addr of eth0, 
-// cause interface aliases are not created using "eth0:0"(deprecated in modern linux distributions)
-// so we have to reuse mac addr and use "ifconfig eth0:0 172.19.0.10/32 up"
-// However,reusing mac addr would also cause problem(arp and so on)
-// In fact all these distors above would change mac addr of eth0 with "ifconfig xxx mac addr" the problem is not about this
-// It is again the way of loading
-// https://github.com/libbpf/libbpf-rs/issues/185 
-static struct host_meta vip = {"172.19.0.10", bpf_htonl(2886926346), {0x02, 0x42, 0xac, 0x13, 0x00, 0x10}, bpf_htons(80)};
+const volatile __u32 NUM_BACKENDS  = 2;
+const static __u8 *index = 0;
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, MAX_BACKEND);
+    __type(key, __u32);
+    __type(value, struct host_meta);
+} backends_map SEC(".maps");
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u8);
+    __type(value, struct host_meta);
+} slb_map SEC(".maps");
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u8);
+    __type(value, struct host_meta);
+} vip_map SEC(".maps");
 
 
 // client ip:port -> slb ip:port
@@ -262,8 +266,9 @@ static __u16 get_src_port(){
 
 __attribute__((always_inline))
 static __u32 get_src_ip(){
-    bpf_printk("NAT IP %u",slb.ip_int);
-    return slb.ip_int;
+    struct host_meta *slb = bpf_map_lookup_elem(&slb_map, index);
+    bpf_printk("NAT IP %u",slb->ip_int);
+    return slb->ip_int;
 }
 
 
@@ -274,7 +279,7 @@ static struct host_meta *lb_hash(ce *nat_key){
     __u32 hash = ((nat_key->ip >> 7) & nat_key->port >> 3);
     bpf_printk("LB hash %u",hash);
     __u32 backend_idx = hash % NUM_BACKENDS;
-    return &(backends[backend_idx]);
+    return bpf_map_lookup_elem(&backends_map, &backend_idx);
 }
 
 __attribute__((always_inline))
@@ -282,14 +287,14 @@ static struct host_meta *lb_rr(){
     static __u32 count = 0;
     __u32 backend_idx = count++ % NUM_BACKENDS;
     bpf_printk("LB rr_idx %u",backend_idx);
-    return &(backends[backend_idx]);
+    return bpf_map_lookup_elem(&backends_map, &backend_idx);
 }
 
 __attribute__((always_inline)) 
 static struct host_meta *lb_rand(){
     __u32 backend_idx = bpf_get_prandom_u32() % NUM_BACKENDS;
     bpf_printk("LB rand_idx %u",backend_idx);
-    return &(backends[backend_idx]);  
+    return bpf_map_lookup_elem(&backends_map, &backend_idx);
 }
 
 __attribute__((always_inline)) 
@@ -345,12 +350,14 @@ int xdp_lb(struct xdp_md *ctx)
     __u16 tcp_len = bpf_ntohs(iph->tot_len) - (iph->ihl << 2);
     // https://www.kernel.org/doc/html/latest/core-api/printk-formats.html#ipv4-addresses
     // bpf_printk("Got a TCP packet of tuple, from %pI4:%u to %pI4:%u, lenL:%u", iph->saddr,sport,iph->daddr,dport,tcp_len);
+
+    struct host_meta *vip = bpf_map_lookup_elem(&vip_map, index);
     bpf_printk("Got a TCP packet of tuple \n \
             from %u|%pI4:%u|%u to %u|%pI4:%u|%u, \n \
             iph->daddr: %u|%pI4, vip.ip_int: %u|%pI4 ",
     iph->saddr,&(iph->saddr),tcph->source,bpf_ntohs(tcph->source),
     iph->daddr,&(iph->daddr),tcph->dest, bpf_ntohs(tcph->dest),
-    iph->daddr,&(iph->daddr),vip.ip_int,&(vip.ip_int));
+    iph->daddr,&(iph->daddr),vip->ip_int,&(vip->ip_int));
     if (tcp_len > TCP_MAX_BITS){
         bpf_printk("Tcp_len %u larger than max , drop",tcp_len);
         return XDP_DROP;
@@ -362,8 +369,8 @@ int xdp_lb(struct xdp_md *ctx)
     // );
 
     int action = XDP_PASS;
-    if (iph->daddr == vip.ip_int){
-        if(tcph->dest != vip.port){
+    if (iph->daddr == vip->ip_int){
+        if(tcph->dest != vip->port){
             bpf_printk("No such port %u , drop",bpf_ntohs(tcph->dest));
             return XDP_DROP;
         }
@@ -397,7 +404,8 @@ int xdp_lb(struct xdp_md *ctx)
             bpf_map_update_elem(&arp_map, &(iph->saddr), eth->h_source, map_flags);       
         }
         l4_ingress(iph,tcph,nat_p,rs);
-        action = gen_mac(ctx,eth,iph,slb.mac_addr,rs->mac_addr);
+        struct host_meta *slb = bpf_map_lookup_elem(&slb_map, index);
+        action = gen_mac(ctx,eth,iph,slb->mac_addr,rs->mac_addr);
         bpf_printk("Ingress a nat packet of tuple\n \
         from %u|%pI4n:%u|%u to %u|%pI4n:%u|%u,", 
         iph->saddr,&(iph->saddr),tcph->source,bpf_ntohs(tcph->source),
@@ -414,13 +422,13 @@ int xdp_lb(struct xdp_md *ctx)
             bpf_printk("No such connection from client before,IP");
             return XDP_PASS;
         }
-        l4_egress(iph,tcph,&vip,nat_p);
+        l4_egress(iph,tcph,vip,nat_p);
         unsigned char *mac_addr = bpf_map_lookup_elem(&arp_map, &iph->daddr);
         if (!mac_addr) {
             bpf_printk("No such connection from client before,MAC");
             return XDP_PASS;
         }
-        action = gen_mac(ctx,eth,iph,vip.mac_addr,mac_addr);
+        action = gen_mac(ctx,eth,iph,vip->mac_addr,mac_addr);
         bpf_printk("Egress a nat packet of tuple\n \
         from %u|%pI4n:%u|%u to %u|%pI4n:%u|%u,", 
         iph->saddr,&(iph->saddr),tcph->source,bpf_ntohs(tcph->source),

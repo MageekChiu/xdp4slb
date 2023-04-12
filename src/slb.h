@@ -21,6 +21,8 @@
 #define DNAT_MAP_SIZE 4096
 #define BACKEND_MAP_SIZE 4096
 
+#define MAX_BACKEND 8
+
 enum LB_ALG{
     lb_random = 1, 
     lb_round_robin = 2, 
