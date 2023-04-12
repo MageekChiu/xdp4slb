@@ -2,6 +2,7 @@
 # debian:bullseye 对应的版本是 2.31 ，不能直接运行宿主机编译的可执行文件。
 
 # this distro doesn't support ip alias; In fact it is the latest kernel that doesn't support ip alias
+# to correct , this is not the cause, it's https://github.com/libbpf/libbpf-rs/issues/185
 # FROM fedora:37
 
 FROM debian:bookworm

@@ -1,3 +1,4 @@
 .vscode/*
 src/.output/*
 src/slb
+*.o

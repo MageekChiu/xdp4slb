@@ -85,6 +85,9 @@ static struct host_meta slb = {"172.19.0.5", bpf_htonl(2886926341), {0x02, 0x42,
 // cause interface aliases are not created using "eth0:0"(deprecated in modern linux distributions)
 // so we have to reuse mac addr and use "ifconfig eth0:0 172.19.0.10/32 up"
 // However,reusing mac addr would also cause problem(arp and so on)
+// In fact all these distors above would change mac addr of eth0 with "ifconfig xxx mac addr" the problem is not about this
+// It is again the way of loading
+// https://github.com/libbpf/libbpf-rs/issues/185 
 static struct host_meta vip = {"172.19.0.10", bpf_htonl(2886926346), {0x02, 0x42, 0xac, 0x13, 0x00, 0x10}, bpf_htons(80)};
 
 

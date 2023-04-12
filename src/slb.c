@@ -11,7 +11,7 @@
 #include "slb.skel.h"
 #include "linux/if_link.h"
 
-#define XDP_FLAGS XDP_FLAGS_UPDATE_IF_NOEXIST 
+#define XDP_FLAGS XDP_FLAGS_UPDATE_IF_NOEXIST | XDP_FLAGS_SKB_MODE
 
 static struct env {
 	bool verbose;
@@ -114,10 +114,10 @@ int main(int argc, char **argv){
 		fprintf(stderr, "Failed to find nic %s \n",nic);
 		goto cleanup;
 	}
-	// int prog_fd = bpf_program__fd(skel->progs.xdp_lb);
-	// err = bpf_xdp_attach(ifindex, prog_fd, XDP_FLAGS,NULL);
-	// better way to attach
-	bpf_program__attach_xdp(skel->progs.xdp_lb,ifindex);
+	int prog_fd = bpf_program__fd(skel->progs.xdp_lb);
+	err = bpf_xdp_attach(ifindex, prog_fd, XDP_FLAGS,NULL);
+	// // better way to attach; but mot working in docker
+	// bpf_program__attach_xdp(skel->progs.xdp_lb,ifindex);
 	if (err) {
 		fprintf(stderr, "Failed to attach program to intraface\n");
 		goto cleanup;
