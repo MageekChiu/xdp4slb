@@ -16,6 +16,7 @@
 static struct env {
 	bool verbose;
 	char *interface;
+	enum LB_ALG cur_lb_alg;
 } env;
 
 const char *argp_program_version = "slb 0.2";
@@ -30,6 +31,7 @@ const char argp_program_doc[] =
 static const struct argp_option opts[] = {
 	{ "verbose", 'v', NULL, 0, "Verbose debug output" },
 	{ "interface", 'i', "nic", 0, "Interface to attach, default:eth0" },
+	{ "alg", 'a', "lb_alg", 0, "Load balancing algorithm:random:1|round_robin:2|hash:3, default:hash" },
 	{},
 };
 
@@ -40,6 +42,15 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state){
 		break;
 	case 'i':
 		env.interface = arg;
+		break;
+	case 'a':
+		errno = 0;
+		int no = strtol(arg, NULL, 10);
+		if (errno || no < 1 || no > 3) {
+			fprintf(stderr, "Invalid alg: %s, must be in 1,2,3\n", arg);
+			argp_usage(state);
+		}
+		env.cur_lb_alg = ( enum LB_ALG ) no;
 		break;
 	case ARGP_KEY_ARG:
 		argp_usage(state);
@@ -68,6 +79,17 @@ static void sig_int(int signo){
 	exiting = 1;
 }
 
+static void populate_defaults(){
+	if(!env.interface){
+		env.interface = "eth0";
+	}
+	fprintf(stderr, "interface %s\n",env.interface);
+
+	if(!env.cur_lb_alg){
+		env.cur_lb_alg = lb_n_hash;
+	}
+	fprintf(stderr, "cur_lb_alg %d\n",env.cur_lb_alg);
+}
 
 int main(int argc, char **argv){
 
@@ -82,10 +104,7 @@ int main(int argc, char **argv){
 	err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
 	if (err)
 		return err;
-	if(!env.interface){
-		env.interface = "eth0";
-	}
-	fprintf(stderr, "interface %s\n",env.interface);
+	populate_defaults();
 
 	/* Cleaner handling of Ctrl-C */
 	signal(SIGINT, sig_int);
@@ -99,7 +118,7 @@ int main(int argc, char **argv){
 	}
 
 	/* Parameterize BPF code  */
-
+	skel->rodata->cur_lb_alg = env.cur_lb_alg;
 
 	/* Load & verify BPF programs */
 	err = slb_bpf__load(skel);

@@ -22,8 +22,8 @@
 #define BACKEND_MAP_SIZE 4096
 
 enum LB_ALG{
-    lb_random, 
-    lb_round_robin, 
-    lb_n_hash,
+    lb_random = 1, 
+    lb_round_robin = 2, 
+    lb_n_hash = 3,
 };
 

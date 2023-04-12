@@ -72,9 +72,7 @@ static  __u16 ipv4_l4_csum(void* data_start, __u32 data_size, struct iphdr* iph,
 
 __u32 map_flags = BPF_ANY;
 
-// enum LB_ALG cur_lb_alg = lb_random;
-// enum LB_ALG cur_lb_alg = lb_round_robin;
-enum LB_ALG cur_lb_alg = lb_n_hash;
+const volatile enum LB_ALG cur_lb_alg = lb_n_hash;
 
 static struct host_meta backends[NUM_BACKENDS] = {
     {"172.19.0.2", bpf_htonl(2886926338), {0x02, 0x42, 0xac, 0x13, 0x00, 0x02}, bpf_htons(80)},
@@ -283,22 +281,24 @@ __attribute__((always_inline))
 static struct host_meta *lb_rr(){
     static __u32 count = 0;
     __u32 backend_idx = count++ % NUM_BACKENDS;
+    bpf_printk("LB rr_idx %u",backend_idx);
     return &(backends[backend_idx]);
 }
 
 __attribute__((always_inline)) 
 static struct host_meta *lb_rand(){
     __u32 backend_idx = bpf_get_prandom_u32() % NUM_BACKENDS;
+    bpf_printk("LB rand_idx %u",backend_idx);
     return &(backends[backend_idx]);  
 }
 
 __attribute__((always_inline)) 
 static struct host_meta *get_backend(enum LB_ALG alg,ce *nat_key){
     switch (alg){
-        case lb_round_robin:
-            return lb_rr();   
         case lb_n_hash:
             return lb_hash(nat_key);
+        case lb_round_robin:
+            return lb_rr();   
         case lb_random: 
         default:
             return lb_rand();
