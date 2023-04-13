@@ -245,7 +245,7 @@ int main(int argc, char **argv){
 
 	/* Parameterize BPF programs  */
 	skel->rodata->NUM_BACKENDS = env.back_num;
-	// skel->rodata->cur_lb_alg = env.cur_lb_alg;
+	skel->rodata->cur_lb_alg = env.cur_lb_alg;
 	// // accessible
 	fprintf(stderr, "slb %s \n",env.slb.ip);
 	fprintf(stderr, "vip %s \n",env.vip.ip);

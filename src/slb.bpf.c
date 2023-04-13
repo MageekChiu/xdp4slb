@@ -64,7 +64,8 @@ static  __u16 ipv4_l4_csum(void* data_start, __u32 data_size, struct iphdr* iph,
 
 const volatile __u32 NUM_BACKENDS  = 2;
 
-// const volatile enum LB_ALG cur_lb_alg = lb_n_hash;
+// there is something wrong with a direct enum
+const volatile __u32 cur_lb_alg = 3;
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
@@ -387,8 +388,8 @@ int xdp_lb(struct xdp_md *ctx)
         };
         struct host_meta *rs = bpf_map_lookup_elem(&back_map, &nat_key);
         if (rs == NULL){
-            // rs = get_backend(cur_lb_alg,&nat_key);
-            rs = get_backend(lb_round_robin,&nat_key);
+            rs = get_backend(cur_lb_alg,&nat_key);
+            // rs = get_backend(lb_round_robin,&nat_key);
             if(!rs){
                 bpf_printk("No rs, pass");
                 return XDP_PASS;
