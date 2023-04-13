@@ -8,13 +8,17 @@
 #include <arpa/inet.h>
 #include <sys/resource.h>
 #include <bpf/libbpf.h>
-#include "slb.h"
+#include <bpf/bpf.h>
 #include "slb.skel.h"
+#include "slb.h"
 #include "linux/if_link.h"
 
 #define XDP_FLAGS XDP_FLAGS_UPDATE_IF_NOEXIST | XDP_FLAGS_SKB_MODE
 #define LINE_SIZE 256
 #define LINE_ELEM_NUM 4
+
+const static __u32 map_flags = BPF_ANY;
+const static __u32 FIXED_INDEX = 0;
 
 static struct env {
 	bool verbose;
@@ -24,6 +28,7 @@ static struct env {
 	char *conf_path;
 	struct host_meta slb;
 	struct host_meta vip;
+	__u8 back_num;
 	// flexible array member must be at end of struct
 	// struct host_meta backends[];
 	struct host_meta backends[MAX_BACKEND];
@@ -37,7 +42,7 @@ const char argp_program_doc[] =
 "\n"
 "Not Production Ready! \n"
 "\n"
-"USAGE: ./slb [-v] [-i nic] -c conf_path\n";
+"USAGE: ./slb [-v] [-i nic] [-a alg] -c conf_path\n";
 
 static const struct argp_option opts[] = {
 	{ "verbose", 'v', NULL, 0, "Verbose debug output" },
@@ -107,10 +112,11 @@ static void populate_defaults(){
 }
 
 static int parse_conf(){
-	if(env.conf_path){
+	if(!env.conf_path){
 		fprintf(stderr, "Missing conf_path\n");
 		return 1;
 	}
+	fprintf(stderr, "conf_path %s\n",env.conf_path);
 
     FILE *fp = fopen(env.conf_path, "r");
     if (!fp){
@@ -124,6 +130,8 @@ static int parse_conf(){
 	__u32 backend_num = 0;
     while (fgets(line_buff, sizeof(line_buff), fp) != NULL){
 		line_num++;
+		// remove trailing \n https://stackoverflow.com/questions/2693776/removing-trailing-newline-character-from-fgets-input
+		line_buff[strcspn(line_buff, "\n")] = 0;
         char *token = strtok(line_buff, ",");
 		// struct host_meta hm = {0};
 		char *meta[LINE_ELEM_NUM];
@@ -140,7 +148,7 @@ static int parse_conf(){
 		errno = 0;
 		__u16 port = strtol(meta[3], NULL, 10);
 		if (errno || port < 1 || port > 65535) {
-			fprintf(stderr, "error port %s!\n",meta[3]);
+			fprintf(stderr, "error port %s, errno %d!\n",meta[3],errno);
         	err = 1;
 			break;
 		}
@@ -164,8 +172,10 @@ static int parse_conf(){
 		}
 
 		struct host_meta hm;
-		hm.ip = meta[1];
-		hm.ip_int = htonl(ip);
+		memcpy(hm.ip, meta[1], strlen(meta[1]));
+		// no need ip is network endian already
+		// hm.ip_int = htonl(ip);
+		hm.ip_int = ip;
 		// error
 		// hm.mac_addr = mac_addr;
 		memcpy(hm.mac_addr, mac_addr, ETH_ALEN);
@@ -185,11 +195,20 @@ static int parse_conf(){
         	err = 1;
 			break;
 		}
+		fprintf(stderr, "type: %s, ip: %s--%s--%u--%u, mac: %s--%02x:%02x:%02x:%02x:%02x:%02x, port: %s--%u \n",
+			meta[0],meta[1],hm.ip,ip,hm.ip_int,meta[2],
+			hm.mac_addr[0],hm.mac_addr[1],hm.mac_addr[2],hm.mac_addr[3],hm.mac_addr[4],hm.mac_addr[5],
+			meta[3],hm.port);
+
     }
 	if(line_num < 3 || backend_num < 1){
 		fprintf(stderr, "Not enough config in file %s!,line_num %u,backend_num %u\n",env.conf_path,line_num,backend_num);
         err = 1;
 	}
+	env.back_num = backend_num;
+	fprintf(stderr, "config: back_num\t%d\n",env.back_num);
+	fprintf(stderr, "config: vip\t %u \n",env.vip.ip_int);
+	fprintf(stderr, "config: slb\t %u \n",env.slb.ip_int);
 
     fclose(fp);
 
@@ -225,7 +244,13 @@ int main(int argc, char **argv){
 	}
 
 	/* Parameterize BPF programs  */
-	skel->rodata->cur_lb_alg = env.cur_lb_alg;
+	skel->rodata->NUM_BACKENDS = env.back_num;
+	// skel->rodata->cur_lb_alg = env.cur_lb_alg;
+	// // accessible
+	fprintf(stderr, "slb %s \n",env.slb.ip);
+	fprintf(stderr, "vip %s \n",env.vip.ip);
+	fprintf(stderr, "backends num: %d \n",env.back_num);
+	
 
 	/* Load & verify BPF programs */
 	err = slb_bpf__load(skel);
@@ -233,6 +258,7 @@ int main(int argc, char **argv){
 		fprintf(stderr, "Failed to load and verify BPF skeleton\n");
 		goto cleanup;
 	}
+
 
 	/* Attach  */
 	int ifindex = if_nametoindex(env.interface);
@@ -247,6 +273,33 @@ int main(int argc, char **argv){
 	if (err) {
 		fprintf(stderr, "Failed to attach program to intraface\n");
 		goto cleanup;
+	}
+
+	// must be after attaching or "Error updating vip_map 4294967295, code 9, reaon Bad file descriptor!"
+	int vip_map_fd = bpf_map__fd(skel->maps.vip_map);
+	int slb_map_fd = bpf_map__fd(skel->maps.slb_map);
+	int backends_map_fd = bpf_map__fd(skel->maps.backends_map);
+	if(!vip_map_fd || !slb_map_fd || !backends_map_fd){
+		fprintf(stderr, "Failed to find config map\n");
+		return 1;
+	}
+	errno = 0;
+	err = bpf_map_update_elem(vip_map_fd, &FIXED_INDEX, &(env.vip), map_flags);
+	if (err){
+		fprintf(stderr, "Error updating vip_map %u, code %u, reaon %s!\n",vip_map_fd, errno,strerror(errno));
+        return 1;
+    }
+	err = bpf_map_update_elem(slb_map_fd, &FIXED_INDEX, &(env.slb), map_flags);
+	if (err){
+		fprintf(stderr, "Error updating slb_map %u, code %u, reaon %s!\n",slb_map_fd, errno,strerror(errno));
+        return 1;
+    }
+	for(int i = 0;i < env.back_num;i++){
+		err = bpf_map_update_elem(backends_map_fd, &i, &(env.backends[i]), map_flags);
+		if (err){
+			fprintf(stderr, "Error updating backends_map %u, code %u, reaon %s!\n",backends_map_fd, errno,strerror(errno));
+			return 1;
+		}
 	}
 
 	while (!exiting) {

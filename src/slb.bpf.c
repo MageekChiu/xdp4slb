@@ -1,9 +1,11 @@
-#include "slb.h"
 #include "vmlinux.h"
+#include "slb.h"
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
 
+const __u32 map_flags = BPF_ANY;
+const __u32 FIXED_INDEX = 0;
 
 struct conntrack_entry {
     __u32 ip;
@@ -60,13 +62,9 @@ static  __u16 ipv4_l4_csum(void* data_start, __u32 data_size, struct iphdr* iph,
 }
 
 
-__u32 map_flags = BPF_ANY;
-
-const volatile enum LB_ALG cur_lb_alg = lb_n_hash;
-
 const volatile __u32 NUM_BACKENDS  = 2;
 
-const static __u8 *index = 0;
+// const volatile enum LB_ALG cur_lb_alg = lb_n_hash;
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
@@ -78,14 +76,14 @@ struct {
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, 1);
-    __type(key, __u8);
+    __type(key, __u32);
     __type(value, struct host_meta);
 } slb_map SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, 1);
-    __type(key, __u8);
+    __type(key, __u32);
     __type(value, struct host_meta);
 } vip_map SEC(".maps");
 
@@ -263,7 +261,11 @@ static __u16 get_src_port(){
 
 __attribute__((always_inline))
 static __u32 get_src_ip(){
-    struct host_meta *slb = bpf_map_lookup_elem(&slb_map, index);
+    struct host_meta *slb = bpf_map_lookup_elem(&slb_map, &FIXED_INDEX);
+    if((!slb)){
+        bpf_printk("No slb, pass");
+        return XDP_PASS;
+    }
     bpf_printk("NAT IP %u",slb->ip_int);
     return slb->ip_int;
 }
@@ -348,7 +350,12 @@ int xdp_lb(struct xdp_md *ctx)
     // https://www.kernel.org/doc/html/latest/core-api/printk-formats.html#ipv4-addresses
     // bpf_printk("Got a TCP packet of tuple, from %pI4:%u to %pI4:%u, lenL:%u", iph->saddr,sport,iph->daddr,dport,tcp_len);
 
-    struct host_meta *vip = bpf_map_lookup_elem(&vip_map, index);
+    struct host_meta *vip = bpf_map_lookup_elem(&vip_map, &FIXED_INDEX);
+    if((!vip)){
+        // have to check explicitly
+        bpf_printk("No vip, pass");
+        return XDP_PASS;
+    }
     bpf_printk("Got a TCP packet of tuple \n \
             from %u|%pI4:%u|%u to %u|%pI4:%u|%u, \n \
             iph->daddr: %u|%pI4, vip.ip_int: %u|%pI4 ",
@@ -380,7 +387,12 @@ int xdp_lb(struct xdp_md *ctx)
         };
         struct host_meta *rs = bpf_map_lookup_elem(&back_map, &nat_key);
         if (rs == NULL){
-            rs = get_backend(cur_lb_alg,&nat_key);
+            // rs = get_backend(cur_lb_alg,&nat_key);
+            rs = get_backend(lb_round_robin,&nat_key);
+            if(!rs){
+                bpf_printk("No rs, pass");
+                return XDP_PASS;
+            }
             bpf_map_update_elem(&back_map, &nat_key, rs, map_flags); 
         }
         ce *nat_p = bpf_map_lookup_elem(&snat_map, &nat_key);
@@ -401,7 +413,11 @@ int xdp_lb(struct xdp_md *ctx)
             bpf_map_update_elem(&arp_map, &(iph->saddr), eth->h_source, map_flags);       
         }
         l4_ingress(iph,tcph,nat_p,rs);
-        struct host_meta *slb = bpf_map_lookup_elem(&slb_map, index);
+        struct host_meta *slb = bpf_map_lookup_elem(&slb_map, &FIXED_INDEX);
+        if((!slb)){
+            bpf_printk("No slb, pass");
+            return XDP_PASS;
+        }
         action = gen_mac(ctx,eth,iph,slb->mac_addr,rs->mac_addr);
         bpf_printk("Ingress a nat packet of tuple\n \
         from %u|%pI4n:%u|%u to %u|%pI4n:%u|%u,", 

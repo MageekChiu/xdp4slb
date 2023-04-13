@@ -8,6 +8,7 @@
 // #undef AF_INET
 // #define AF_INET 2
 #define TCP_MAX_BITS 1480
+#define IP_STRING_LEN 16
 
 
 #define MAX_U_32_INT 4294967295.0
@@ -34,7 +35,8 @@ typedef short unsigned int __u16;
 typedef unsigned char __u8;
 
 struct host_meta {
-    char *ip;
+    // with *ip i have to copy myself, with array simple asignment wiil do copying for me
+    __u8 ip[IP_STRING_LEN];
     __u32 ip_int;
     __u8 mac_addr[ETH_ALEN];
     __u16 port;
