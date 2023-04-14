@@ -4,8 +4,8 @@
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
 
-const __u32 map_flags = BPF_ANY;
-const __u32 FIXED_INDEX = 0;
+const static __u32 map_flags = BPF_ANY;
+const static __u32 FIXED_INDEX = 0;
 
 struct conntrack_entry {
     __u32 ip;
@@ -19,7 +19,16 @@ const volatile __u32 NUM_BACKENDS  = 2;
 // there is something wrong with a direct enum
 const volatile __u32 cur_lb_alg = 3;
 
+// in container, one global var would affect another,so use map
+// to be continued
+// not var but the log !
 const volatile __u32 local_ip = 0;
+// struct {
+//     __uint(type, BPF_MAP_TYPE_ARRAY);
+//     __uint(max_entries, 1);
+//     __type(key, __u32);
+//     __type(value, __u32);
+// } local_ip_map SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
@@ -62,18 +71,18 @@ static int gen_mac(struct xdp_md *ctx, struct ethhdr *eth ,struct iphdr *iph,
     // n_s,n_d);
 
     // not enough param number in one line
-    bpf_printk("origin- %02x:%02x:%02x:%02x:%02x:%02x",
+    bpf_printk("%u,origin- %02x:%02x:%02x:%02x:%02x:%02x",local_ip,
         eth->h_source[0],eth->h_source[1],eth->h_source[2],
         eth->h_source[3],eth->h_source[4],eth->h_source[5]
     );
-    bpf_printk("to----- %02x:%02x:%02x:%02x:%02x:%02x",
+    bpf_printk("%u,to----- %02x:%02x:%02x:%02x:%02x:%02x",local_ip,
         eth->h_dest[0],eth->h_dest[1],eth->h_dest[2],
         eth->h_dest[3],eth->h_dest[4],eth->h_dest[5]
     );
-    bpf_printk("now---- %02x:%02x:%02x:%02x:%02x:%02x",
+    bpf_printk("%u,now---- %02x:%02x:%02x:%02x:%02x:%02x",local_ip,
         n_s[0],n_s[1],n_s[2],n_s[3],n_s[4],n_s[5]
     );
-    bpf_printk("to----- %02x:%02x:%02x:%02x:%02x:%02x",
+    bpf_printk("%u,to----- %02x:%02x:%02x:%02x:%02x:%02x",local_ip,
         n_d[0],n_d[1],n_d[2],n_d[3],n_d[4],n_d[5]
     );
 
@@ -124,7 +133,7 @@ __attribute__((always_inline))
 static struct host_meta *lb_hash(ce *nat_key){
     // with hash, we dobn't need to sync session amongst slb intances
     __u32 hash = ((nat_key->ip >> 7) & nat_key->port >> 3);
-    bpf_printk("LB hash %u",hash);
+    bpf_printk("%u,LB hash %u",local_ip,hash);
     __u32 backend_idx = hash % NUM_BACKENDS;
     return bpf_map_lookup_elem(&backends_map, &backend_idx);
 }
@@ -133,14 +142,14 @@ __attribute__((always_inline))
 static struct host_meta *lb_rr(){
     static __u32 count = 0;
     __u32 backend_idx = count++ % NUM_BACKENDS;
-    bpf_printk("LB rr_idx %u",backend_idx);
+    bpf_printk("%u,LB rr_idx %u",local_ip,backend_idx);
     return bpf_map_lookup_elem(&backends_map, &backend_idx);
 }
 
 __attribute__((always_inline)) 
 static struct host_meta *lb_rand(){
     __u32 backend_idx = bpf_get_prandom_u32() % NUM_BACKENDS;
-    bpf_printk("LB rand_idx %u",backend_idx);
+    bpf_printk("%u,LB rand_idx %u",local_ip,backend_idx);
     return bpf_map_lookup_elem(&backends_map, &backend_idx);
 }
 
@@ -162,13 +171,13 @@ SEC("xdp")
 int xdp_lb(struct xdp_md *ctx){
     void *data = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
-    bpf_printk("Got a packet");
+    bpf_printk("%u,Got a packet",local_ip);
     struct ethhdr *eth = data;
     if (data + sizeof(struct ethhdr) > data_end)
         return XDP_PASS;
 
     if (eth->h_proto != bpf_htons(ETH_P_IP)){
-        bpf_printk("Not IPV4, pass");
+        bpf_printk("%u,Not IPV4, pass",local_ip);
         return XDP_PASS;
     }
 
@@ -178,7 +187,7 @@ int xdp_lb(struct xdp_md *ctx){
 
     // u8,so no big or little edian
     if (iph->protocol != IPPROTO_TCP){
-        bpf_printk("Not TCP, pass");
+        bpf_printk("%u,Not TCP, pass",local_ip);
         return XDP_PASS;
     }
 
@@ -186,12 +195,20 @@ int xdp_lb(struct xdp_md *ctx){
     if (data + sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct tcphdr) > data_end)
         return XDP_PASS;
 
+    //  __u32 *local_ip_addr = bpf_map_lookup_elem(&local_ip_map, &FIXED_INDEX);
+    // if((!local_ip_addr)){
+    //     bpf_printk("No local_ip, pass");
+    //     return XDP_PASS;
+    // }
+    // __u32 local_ip = *local_ip_addr;
     if(iph->daddr == local_ip){
         // process as real server
-        bpf_printk("Process a packet of tuple\n \
-        from %u|%pI4n:%u|%u to %u|%pI4n:%u|%u,", 
+        bpf_printk("%u,Process a packet of tuple\n \
+        from %u|%pI4n:%u|%u to %u|%pI4n:%u|%u,\n \
+        local %u|%pI4n",local_ip, 
         iph->saddr,&(iph->saddr),tcph->source,bpf_ntohs(tcph->source),
-        iph->daddr,&(iph->daddr),tcph->dest,bpf_ntohs(tcph->dest));
+        iph->daddr,&(iph->daddr),tcph->dest,bpf_ntohs(tcph->dest),
+        local_ip, &local_ip);
         return XDP_PASS;
     }
 
@@ -200,15 +217,15 @@ int xdp_lb(struct xdp_md *ctx){
     struct host_meta *vip = bpf_map_lookup_elem(&vip_map, &FIXED_INDEX);
     if((!vip)){
         // have to check explicitly
-        bpf_printk("No vip, pass");
+        bpf_printk("%u,No vip, pass",local_ip);
         return XDP_PASS;
     }
-    bpf_printk("Got a TCP packet of tuple \n \
+    bpf_printk("%u,Got a TCP packet of tuple \n \
             from %u|%pI4:%u|%u to %u|%pI4:%u|%u, \n \
-            iph->daddr: %u|%pI4, vip.ip_int: %u|%pI4 ",
+            vip.ip_int: %u|%pI4 ",local_ip,
     iph->saddr,&(iph->saddr),tcph->source,bpf_ntohs(tcph->source),
     iph->daddr,&(iph->daddr),tcph->dest, bpf_ntohs(tcph->dest),
-    iph->daddr,&(iph->daddr),vip->ip_int,&(vip->ip_int));
+    vip->ip_int,&(vip->ip_int));
     if (tcp_len > TCP_MAX_BITS){
         bpf_printk("Tcp_len %u larger than max , drop",tcp_len);
         return XDP_DROP;
@@ -217,7 +234,7 @@ int xdp_lb(struct xdp_md *ctx){
     int action = XDP_PASS;
     if (iph->daddr == vip->ip_int){
         if(tcph->dest != vip->port){
-            bpf_printk("No such port %u , drop",bpf_ntohs(tcph->dest));
+            bpf_printk("%u,No such port %u , drop",local_ip,bpf_ntohs(tcph->dest));
             return XDP_DROP;
         }
         // Choose a backend server to send the request to; 
@@ -231,22 +248,22 @@ int xdp_lb(struct xdp_md *ctx){
         if (rs == NULL){
             rs = get_backend(cur_lb_alg,&nat_key);
             if(!rs){
-                bpf_printk("No rs, pass");
+                bpf_printk("%u,No rs, pass",local_ip);
                 return XDP_PASS;
             }
             bpf_map_update_elem(&back_map, &nat_key, rs, map_flags); 
         }
         if(rs->ip_int == local_ip){
-            bpf_printk("Picked this rs, pass");
+            bpf_printk("%u,Picked this rs, pass",local_ip);
             return XDP_PASS;
         }
         action = gen_mac(ctx,eth,iph,vip->mac_addr,rs->mac_addr);
-        bpf_printk("Ingress a nat packet of tuple\n \
-        from %u|%pI4n:%u|%u to %u|%pI4n:%u|%u,", 
+        bpf_printk("%u,Ingress a nat packet of tuple\n \
+        from %u|%pI4n:%u|%u to %u|%pI4n:%u|%u,",local_ip, 
         iph->saddr,&(iph->saddr),tcph->source,bpf_ntohs(tcph->source),
         iph->daddr,&(iph->daddr),tcph->dest,bpf_ntohs(tcph->dest));
     }else{
-        bpf_printk("No such ip %pI4 , drop",iph->daddr);
+        bpf_printk("%u,No such ip %pI4n , drop",local_ip,&iph->daddr);
         return XDP_DROP;
     }
     return action;

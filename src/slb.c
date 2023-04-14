@@ -41,7 +41,7 @@ static struct env {
 	
 } env;
 
-const char *argp_program_version = "slb 0.3";
+const char *argp_program_version = "slb 0.4";
 const char *argp_program_bug_address = "<mageekchiu@gmail.com>";
 const char argp_program_doc[] =
 "A software load balancing implemention based on ebpf/xdp.\n"
@@ -174,9 +174,13 @@ static int parse_conf(){
 		}
 
 		struct host_meta hm;
-		hm.ip = meta[1];
-		// memcpy(hm.ip, meta[1], strlen(meta[1]));
-		__u32 ip = inet_addr(meta[1]);
+		// if ip is array ,I dont need to do the following 3 line,
+		// a simple memcpy wiil do
+		int size = sizeof(char) * (strlen(meta[1]) + 1);
+		hm.ip = malloc(size);
+		memcpy(hm.ip, meta[1], size);
+
+		__u32 ip = inet_addr(hm.ip);
 		// no need ip is network endian already
 		// hm.ip_int = htonl(ip);
 		hm.ip_int = ip;
@@ -302,9 +306,12 @@ int main(int argc, char **argv){
 	/* Parameterize BPF programs  */
 	skel->rodata->NUM_BACKENDS = env.back_num;
 	skel->rodata->cur_lb_alg = env.cur_lb_alg;
+	skel->rodata->local_ip = env.local_ip;
 	// // accessible
+	fprintf(stderr, "alg %u \n",skel->rodata->cur_lb_alg);
 	fprintf(stderr, "vip %s \n",env.vip.ip);
-	fprintf(stderr, "backends num: %d \n",env.back_num);
+	fprintf(stderr, "local ip %u \n",skel->rodata->local_ip);
+	fprintf(stderr, "backends num: %u \n",skel->rodata->NUM_BACKENDS);
 	
 
 	/* Load & verify BPF programs */
@@ -332,8 +339,11 @@ int main(int argc, char **argv){
 
 	// must be after attaching or "Error updating vip_map 4294967295, code 9, reaon Bad file descriptor!"
 	int vip_map_fd = bpf_map__fd(skel->maps.vip_map);
+	// int local_ip_map_fd = bpf_map__fd(skel->maps.local_ip_map);
 	int backends_map_fd = bpf_map__fd(skel->maps.backends_map);
-	if(!vip_map_fd || !backends_map_fd){
+	if(!vip_map_fd || 
+		// !local_ip_map_fd || 
+		!backends_map_fd){
 		fprintf(stderr, "Failed to find config map\n");
 		return 1;
 	}
@@ -343,6 +353,11 @@ int main(int argc, char **argv){
 		fprintf(stderr, "Error updating vip_map %u, code %u, reaon %s!\n",vip_map_fd, errno,strerror(errno));
         return 1;
     }
+	// err = bpf_map_update_elem(local_ip_map_fd, &FIXED_INDEX, &(env.local_ip), map_flags);
+	// if (err){
+	// 	fprintf(stderr, "Error updating local_ip_map %u, code %u, reaon %s!\n",local_ip_map_fd, errno,strerror(errno));
+    //     return 1;
+    // }
 	for(int i = 0;i < env.back_num;i++){
 		err = bpf_map_update_elem(backends_map_fd, &i, &(env.backends[i]), map_flags);
 		if (err){
