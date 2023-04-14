@@ -5,6 +5,10 @@
 #include <unistd.h>
 #include <time.h>
 #include <net/if.h>
+#include <sys/socket.h>
+#include <sys/ioctl.h>
+#include <netinet/in.h>
+#include <linux/if.h>
 #include <arpa/inet.h>
 #include <sys/resource.h>
 #include <bpf/libbpf.h>
@@ -13,6 +17,7 @@
 #include "slb.h"
 #include "linux/if_link.h"
 
+// https://github.com/libbpf/libbpf-rs/issues/185
 #define XDP_FLAGS XDP_FLAGS_UPDATE_IF_NOEXIST | XDP_FLAGS_SKB_MODE
 #define LINE_SIZE 256
 #define LINE_ELEM_NUM 4
@@ -26,9 +31,10 @@ static struct env {
 	enum LB_ALG cur_lb_alg;
 
 	char *conf_path;
-	struct host_meta slb;
 	struct host_meta vip;
 	__u8 back_num;
+	__u32 local_ip;
+	__u8 local_mac[ETH_ALEN];
 	// flexible array member must be at end of struct
 	// struct host_meta backends[];
 	struct host_meta backends[MAX_BACKEND];
@@ -120,7 +126,7 @@ static int parse_conf(){
 
     FILE *fp = fopen(env.conf_path, "r");
     if (!fp){
-		fprintf(stderr, "Error opening file %s!\n",env.conf_path);
+		fprintf(stderr, "Error opening config file %s!\n",env.conf_path);
         return 1;
     }
 
@@ -133,7 +139,6 @@ static int parse_conf(){
 		// remove trailing \n https://stackoverflow.com/questions/2693776/removing-trailing-newline-character-from-fgets-input
 		line_buff[strcspn(line_buff, "\n")] = 0;
         char *token = strtok(line_buff, ",");
-		// struct host_meta hm = {0};
 		char *meta[LINE_ELEM_NUM];
 		__u32 i = 0;
 		for(;i < LINE_ELEM_NUM && token != NULL; i++,token = strtok(NULL, ",") ){
@@ -153,12 +158,9 @@ static int parse_conf(){
 			break;
 		}
 
-		__u32 ip = inet_addr(meta[1]);
-
 		__u8 mac_addr[ETH_ALEN];
 		__u32 values[ETH_ALEN];
 		int j;
-
 		if( ETH_ALEN == sscanf(meta[2], "%x:%x:%x:%x:%x:%x%*c",
 			&values[0], &values[1], &values[2],
 			&values[3], &values[4], &values[5]) ){
@@ -166,13 +168,15 @@ static int parse_conf(){
 				mac_addr[j] = (__u8) values[j];
 		}else{
 			/* invalid mac */
-			fprintf(stderr, "error mac %s!\n",meta[2]);
+			fprintf(stderr, "Error mac %s!\n",meta[2]);
         	err = 1;
 			break;
 		}
 
 		struct host_meta hm;
-		memcpy(hm.ip, meta[1], strlen(meta[1]));
+		hm.ip = meta[1];
+		// memcpy(hm.ip, meta[1], strlen(meta[1]));
+		__u32 ip = inet_addr(meta[1]);
 		// no need ip is network endian already
 		// hm.ip_int = htonl(ip);
 		hm.ip_int = ip;
@@ -181,10 +185,8 @@ static int parse_conf(){
 		memcpy(hm.mac_addr, mac_addr, ETH_ALEN);
 		hm.port = htons(port);
 
-		if (strcmp(meta[0], "slb") == 0){
-			env.slb = hm;
-		} 
-		else if (strcmp(meta[0], "vip") == 0){
+		if (strcmp(meta[0], "vip") == 0){
+			memcpy(hm.mac_addr, env.local_mac, ETH_ALEN);
 			env.vip = hm;
 		}
 		else if (strcmp(meta[0], "backend") == 0){
@@ -195,7 +197,9 @@ static int parse_conf(){
         	err = 1;
 			break;
 		}
-		fprintf(stderr, "type: %s, ip: %s--%s--%u--%u, mac: %s--%02x:%02x:%02x:%02x:%02x:%02x, port: %s--%u \n",
+		fprintf(stderr, "type: %s, ip: %s--%s--%u--%u,\
+mac: %s--%02x:%02x:%02x:%02x:%02x:%02x,\
+port: %s--%u \n",
 			meta[0],meta[1],hm.ip,ip,hm.ip_int,meta[2],
 			hm.mac_addr[0],hm.mac_addr[1],hm.mac_addr[2],hm.mac_addr[3],hm.mac_addr[4],hm.mac_addr[5],
 			meta[3],hm.port);
@@ -208,11 +212,61 @@ static int parse_conf(){
 	env.back_num = backend_num;
 	fprintf(stderr, "config: back_num\t%d\n",env.back_num);
 	fprintf(stderr, "config: vip\t %u \n",env.vip.ip_int);
-	fprintf(stderr, "config: slb\t %u \n",env.slb.ip_int);
 
     fclose(fp);
 
 	return err;
+}
+static int parse_local(){
+	// mac
+	char mac_file[64];
+	sprintf(mac_file,"/sys/class/net/%s/address",env.interface);
+	FILE *fp = fopen(mac_file, "r");
+    if (!fp){
+		fprintf(stderr, "Error opening mac file %s!\n",mac_file);
+        return 1;
+    }
+	int mac_str_len = 18;
+	char mac_str[mac_str_len];
+	char *r = fgets(mac_str, mac_str_len, fp);
+	if (!r){
+		fprintf(stderr, "Error reading mac string %s!\n",mac_file);
+        return 1;
+    }
+	__u32 values[ETH_ALEN];
+	int j;
+	if( ETH_ALEN == sscanf(mac_str, "%x:%x:%x:%x:%x:%x%*c",
+		&values[0], &values[1], &values[2],
+		&values[3], &values[4], &values[5]) ){
+		for( j = 0; j < ETH_ALEN; ++j )
+			env.local_mac[j] = (__u8) values[j];
+	}else{
+		/* invalid mac */
+		fprintf(stderr, "Error mac %s in file %s!\n",mac_str,mac_file);
+		return 1;
+	}
+	memcpy(env.vip.mac_addr,env.local_mac,ETH_ALEN);
+    fclose(fp);
+	
+	// ip, no clear file to read
+	// awk '/32 host/ { print f } {f=$2}' <<< "$(</proc/net/fib_trie)"
+	struct ifreq ifr;
+	int fd = socket(AF_INET, SOCK_DGRAM, 0);
+	ifr.ifr_addr.sa_family = AF_INET;
+	strncpy(ifr.ifr_name, env.interface, IFNAMSIZ-1);
+	if(ioctl(fd, SIOCGIFADDR, &ifr) < 0){
+		fprintf(stderr, "Error reading ip addr %s!\n",env.interface);
+        return 1;
+	}
+	/* display result */
+	struct in_addr ip_addr = ((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr;
+	// env.local_ip = htonl(ip_addr.s_addr);
+	// net edian already
+	env.local_ip = (ip_addr.s_addr);
+	printf("Local ip is %s, %u-%u\n", inet_ntoa(ip_addr),ip_addr.s_addr,env.local_ip);
+	close(fd);
+
+	return 0;
 }
 
 int main(int argc, char **argv){
@@ -227,11 +281,13 @@ int main(int argc, char **argv){
 	err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
 	if (err)
 		return err;
+	populate_defaults();
+	err = parse_local();
+	if (err)
+		return err;
 	err = parse_conf();
 	if (err)
 		return err;
-	populate_defaults();
-
 	/* Cleaner handling of Ctrl-C */
 	signal(SIGINT, sig_int);
 	signal(SIGTERM, sig_int);
@@ -247,7 +303,6 @@ int main(int argc, char **argv){
 	skel->rodata->NUM_BACKENDS = env.back_num;
 	skel->rodata->cur_lb_alg = env.cur_lb_alg;
 	// // accessible
-	fprintf(stderr, "slb %s \n",env.slb.ip);
 	fprintf(stderr, "vip %s \n",env.vip.ip);
 	fprintf(stderr, "backends num: %d \n",env.back_num);
 	
@@ -277,9 +332,8 @@ int main(int argc, char **argv){
 
 	// must be after attaching or "Error updating vip_map 4294967295, code 9, reaon Bad file descriptor!"
 	int vip_map_fd = bpf_map__fd(skel->maps.vip_map);
-	int slb_map_fd = bpf_map__fd(skel->maps.slb_map);
 	int backends_map_fd = bpf_map__fd(skel->maps.backends_map);
-	if(!vip_map_fd || !slb_map_fd || !backends_map_fd){
+	if(!vip_map_fd || !backends_map_fd){
 		fprintf(stderr, "Failed to find config map\n");
 		return 1;
 	}
@@ -287,11 +341,6 @@ int main(int argc, char **argv){
 	err = bpf_map_update_elem(vip_map_fd, &FIXED_INDEX, &(env.vip), map_flags);
 	if (err){
 		fprintf(stderr, "Error updating vip_map %u, code %u, reaon %s!\n",vip_map_fd, errno,strerror(errno));
-        return 1;
-    }
-	err = bpf_map_update_elem(slb_map_fd, &FIXED_INDEX, &(env.slb), map_flags);
-	if (err){
-		fprintf(stderr, "Error updating slb_map %u, code %u, reaon %s!\n",slb_map_fd, errno,strerror(errno));
         return 1;
     }
 	for(int i = 0;i < env.back_num;i++){

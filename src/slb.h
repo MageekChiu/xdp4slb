@@ -36,7 +36,8 @@ typedef unsigned char __u8;
 
 struct host_meta {
     // with *ip i have to copy myself, with array simple asignment wiil do copying for me
-    __u8 ip[IP_STRING_LEN];
+    char *ip;
+    // __u8 ip[IP_STRING_LEN];
     __u32 ip_int;
     __u8 mac_addr[ETH_ALEN];
     __u16 port;

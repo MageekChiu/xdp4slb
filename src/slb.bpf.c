@@ -13,59 +13,13 @@ struct conntrack_entry {
 } __attribute__((packed));
 typedef struct conntrack_entry ce;
 
-__attribute__((always_inline))
-static  __u16 csum_fold_helper(__u64 csum){
-    int i;
-#pragma unroll
-    for (i = 0; i < 4; i++)
-    {
-        if (csum >> 16)
-            csum = (csum & 0xffff) + (csum >> 16);
-    }
-    return ~csum;
-}
-
-__attribute__((always_inline))
-static __u16 iph_csum(struct iphdr *iph){
-    iph->check = 0;
-    unsigned long long csum = bpf_csum_diff(0, 0, (unsigned int *)iph, sizeof(struct iphdr), 0);
-    return csum_fold_helper(csum);
-}
-
-__attribute__((always_inline))
-static  __u16 ipv4_l4_csum(void* data_start, __u32 data_size, struct iphdr* iph,void *data_end) {
-    __u64 csum_buffer = 0;
-    __u16 *buf = (void *)data_start;
-
-    // Compute pseudo-header checksum
-    csum_buffer += (__u16)iph->saddr;
-    csum_buffer += (__u16)(iph->saddr >> 16);
-    csum_buffer += (__u16)iph->daddr;
-    csum_buffer += (__u16)(iph->daddr >> 16);
-    csum_buffer += (__u32)iph->protocol << 8;
-    csum_buffer += data_size;
-
-    // Compute checksum on udp/tcp header + payload
-    for (int i = 0; i < TCP_MAX_BITS; i += 2) {
-        if ((void *)(buf + 1) > data_end) {
-            break;
-        }
-        csum_buffer += *buf;
-        buf++;
-    }
-    if ((void *)buf + 1 <= data_end) {
-    // In case payload is not 2 bytes aligned
-        csum_buffer += *(__u8 *)buf;
-    }
-
-    return csum_fold_helper(csum_buffer);
-}
-
 
 const volatile __u32 NUM_BACKENDS  = 2;
 
 // there is something wrong with a direct enum
 const volatile __u32 cur_lb_alg = 3;
+
+const volatile __u32 local_ip = 0;
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
@@ -79,39 +33,8 @@ struct {
     __uint(max_entries, 1);
     __type(key, __u32);
     __type(value, struct host_meta);
-} slb_map SEC(".maps");
-
-struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 1);
-    __type(key, __u32);
-    __type(value, struct host_meta);
 } vip_map SEC(".maps");
 
-
-// client ip:port -> slb ip:port
-struct {
-    __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __uint(max_entries, SNAT_MAP_SIZE);
-    __type(key, ce);
-    __type(value, ce);
-} snat_map SEC(".maps");
-
-// slb ip:port -> client ip:port
-struct {
-    __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __uint(max_entries, DNAT_MAP_SIZE);
-    __type(key, ce);
-    __type(value, ce);
-} dnat_map SEC(".maps");
-
-// client ip -> the corresponding mac
-struct {
-    __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __uint(max_entries, ARP_MAP_SIZE);
-    __type(key, __u32);
-    __type(value, unsigned char [ETH_ALEN]);
-} arp_map SEC(".maps");
 
 // client ip:port -> the corresponding backend
 struct {
@@ -154,29 +77,6 @@ static int gen_mac(struct xdp_md *ctx, struct ethhdr *eth ,struct iphdr *iph,
         n_d[0],n_d[1],n_d[2],n_d[3],n_d[4],n_d[5]
     );
 
-    // unable to load
-    // char msg[256];
-    // int len = 0;
-    // len += sprintf(msg +len,"origin %pM to ", eth->h_source);
-    // len += sprintf(msg +len,"%pM,\n" ,eth->h_dest);
-    // len += sprintf(msg +len,"now %pM to", n_s);
-    // len += sprintf(msg +len,"%pM", n_d);
-    // bpf_printk("gen_mac %s ",msg);
-
-    // too many arguments to function call, expected 5, have 7
-    // char msg[128];
-    // bpf_snprintf(msg,sizeof(msg),"origin %pM to %pM, now %pM to %pM",eth->h_source,eth->h_dest,n_s,n_d);
-    // bpf_printk("gen_mac %s ",msg);
-
-    // unable to load
-    // char msg[128];
-    // int len = 0;
-    // len += bpf_snprintf(msg + len,sizeof(msg) - len,"origin %pM to ", eth->h_source,sizeof(eth->h_source));
-    // len += bpf_snprintf(msg + len,sizeof(msg) - len,"%pM,\n" ,eth->h_dest,sizeof(eth->h_dest));
-    // len += bpf_snprintf(msg + len,sizeof(msg) - len,"now %pM to", n_s,sizeof(n_s));
-    // len += bpf_snprintf(msg + len,sizeof(msg) - len,"%pM", n_d,sizeof(n_d));
-    // bpf_printk("gen_mac %s ",msg);
-
     memcpy(eth->h_source, n_s, ETH_ALEN);
     memcpy(eth->h_dest, n_d, ETH_ALEN);
     return XDP_TX;
@@ -217,59 +117,6 @@ static int gen_mac(struct xdp_md *ctx, struct ethhdr *eth ,struct iphdr *iph,
 // 	}
 //     return action;
 // }
-
-__attribute__((always_inline))
-static void l4_ingress(struct iphdr *iph, struct tcphdr *tcph, ce *src, struct host_meta *dst){
-    // net edian allready
-    iph->saddr = (src->ip);
-    tcph->source = (src->port);
-    iph->daddr = (dst->ip_int);
-    tcph->dest = (dst->port);
-}
-
-__attribute__((always_inline))
-static void l4_egress(struct iphdr *iph, struct tcphdr *tcph, struct host_meta *src, ce *dst){
-    // net edian allready
-    iph->saddr = (src->ip_int);
-    tcph->source = (src->port);
-    iph->daddr = (dst->ip);
-    tcph->dest = (dst->port);
-}
-
-
-// todo random port within[30100,60900]
-__attribute__((always_inline))
-static __u16 get_src_port(){
-    // bpf_printk("NAT PORT");
-
-    static __u16 cur = 0;
-    __u16 t = (__u16)(cur++ + NAT_PORT_MIN);
-    if(t == NAT_PORT_MAX){
-        cur = 0;
-    }
-    __u16 r = bpf_htons(t);
-    // bpf_printk("NAT r:%u ",r);
-    // bpf_printk("NAT cur:%u ,t:%u ",cur,t);
-    bpf_printk("NAT PORT cur:%u ,t:%u ,r:%u",cur,t,r);
-    return r;
-    
-    // __u32 port = bpf_get_prandom_u32();
-    // __u32 p = (port % NAT_PORT_RANGE) + NAT_PORT_MIN;
-    // __u16 r = bpf_ntohs((__u16)p);
-    // bpf_printk("NAT PORT cur:%u ,p:%u ,r:%u",port,p,r);
-    // return r;
-}
-
-__attribute__((always_inline))
-static __u32 get_src_ip(){
-    struct host_meta *slb = bpf_map_lookup_elem(&slb_map, &FIXED_INDEX);
-    if((!slb)){
-        bpf_printk("No slb, pass");
-        return XDP_PASS;
-    }
-    bpf_printk("NAT IP %u",slb->ip_int);
-    return slb->ip_int;
-}
 
 
 // todo implement different load balancing algorithm
@@ -312,10 +159,7 @@ static struct host_meta *get_backend(enum LB_ALG alg,ce *nat_key){
 
 
 SEC("xdp")
-int xdp_lb(struct xdp_md *ctx)
-{
-    // test where error is
-    // return XDP_PASS;
+int xdp_lb(struct xdp_md *ctx){
     void *data = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
     bpf_printk("Got a packet");
@@ -342,14 +186,16 @@ int xdp_lb(struct xdp_md *ctx)
     if (data + sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct tcphdr) > data_end)
         return XDP_PASS;
 
-    // the definition in ip.h is __be32 in tcp.h is 
-    // __u32 sip = (iph->saddr);
-    // __u32 dip = (iph->daddr);
-    // __u16 sport = bpf_ntohs(tcph->source);
-    // __u16 dport = bpf_ntohs(tcph->dest);
+    if(iph->daddr == local_ip){
+        // process as real server
+        bpf_printk("Process a packet of tuple\n \
+        from %u|%pI4n:%u|%u to %u|%pI4n:%u|%u,", 
+        iph->saddr,&(iph->saddr),tcph->source,bpf_ntohs(tcph->source),
+        iph->daddr,&(iph->daddr),tcph->dest,bpf_ntohs(tcph->dest));
+        return XDP_PASS;
+    }
+
     __u16 tcp_len = bpf_ntohs(iph->tot_len) - (iph->ihl << 2);
-    // https://www.kernel.org/doc/html/latest/core-api/printk-formats.html#ipv4-addresses
-    // bpf_printk("Got a TCP packet of tuple, from %pI4:%u to %pI4:%u, lenL:%u", iph->saddr,sport,iph->daddr,dport,tcp_len);
 
     struct host_meta *vip = bpf_map_lookup_elem(&vip_map, &FIXED_INDEX);
     if((!vip)){
@@ -367,11 +213,6 @@ int xdp_lb(struct xdp_md *ctx)
         bpf_printk("Tcp_len %u larger than max , drop",tcp_len);
         return XDP_DROP;
     }
-    // bpf_printk("dip \n%u %u %u \n%u,%u %u",
-    //     // bpf_ntohl bpf_htonl all just flip, the func name is bad
-    //     dip,bpf_ntohl(dip),bpf_htonl(dip),
-    //     vip.ip_int,bpf_ntohl(vip.ip_int),bpf_htonl(vip.ip_int)
-    // );
 
     int action = XDP_PASS;
     if (iph->daddr == vip->ip_int){
@@ -389,75 +230,25 @@ int xdp_lb(struct xdp_md *ctx)
         struct host_meta *rs = bpf_map_lookup_elem(&back_map, &nat_key);
         if (rs == NULL){
             rs = get_backend(cur_lb_alg,&nat_key);
-            // rs = get_backend(lb_round_robin,&nat_key);
             if(!rs){
                 bpf_printk("No rs, pass");
                 return XDP_PASS;
             }
             bpf_map_update_elem(&back_map, &nat_key, rs, map_flags); 
         }
-        ce *nat_p = bpf_map_lookup_elem(&snat_map, &nat_key);
-        if (nat_p == NULL) {
-            __u32 n_ip = get_src_ip();
-            __u16 n_port = get_src_port();
-            ce nat_val = {
-                .ip = n_ip,
-                .port = n_port,
-            };
-            nat_p = &nat_val;
-            // client src -> slb src
-            bpf_map_update_elem(&snat_map, &nat_key, nat_p, map_flags); 
-            //  slb src  -> client src
-            bpf_map_update_elem(&dnat_map, nat_p, &nat_key, map_flags);
-
-            // arp table       
-            bpf_map_update_elem(&arp_map, &(iph->saddr), eth->h_source, map_flags);       
-        }
-        l4_ingress(iph,tcph,nat_p,rs);
-        struct host_meta *slb = bpf_map_lookup_elem(&slb_map, &FIXED_INDEX);
-        if((!slb)){
-            bpf_printk("No slb, pass");
+        if(rs->ip_int == local_ip){
+            bpf_printk("Picked this rs, pass");
             return XDP_PASS;
         }
-        action = gen_mac(ctx,eth,iph,slb->mac_addr,rs->mac_addr);
+        action = gen_mac(ctx,eth,iph,vip->mac_addr,rs->mac_addr);
         bpf_printk("Ingress a nat packet of tuple\n \
         from %u|%pI4n:%u|%u to %u|%pI4n:%u|%u,", 
         iph->saddr,&(iph->saddr),tcph->source,bpf_ntohs(tcph->source),
         iph->daddr,&(iph->daddr),tcph->dest,bpf_ntohs(tcph->dest));
     }else{
-        // disable this branch, so the error out put is clearer
-        // return XDP_PASS;
-        ce nat_key = {
-            .ip = iph->daddr,
-            .port = tcph->dest
-        };
-        ce *nat_p = bpf_map_lookup_elem(&dnat_map, &nat_key);
-        if (nat_p == NULL) {
-            bpf_printk("No such connection from client before,IP");
-            return XDP_PASS;
-        }
-        l4_egress(iph,tcph,vip,nat_p);
-        unsigned char *mac_addr = bpf_map_lookup_elem(&arp_map, &iph->daddr);
-        if (!mac_addr) {
-            bpf_printk("No such connection from client before,MAC");
-            return XDP_PASS;
-        }
-        action = gen_mac(ctx,eth,iph,vip->mac_addr,mac_addr);
-        bpf_printk("Egress a nat packet of tuple\n \
-        from %u|%pI4n:%u|%u to %u|%pI4n:%u|%u,", 
-        iph->saddr,&(iph->saddr),tcph->source,bpf_ntohs(tcph->source),
-        iph->daddr,&(iph->daddr),tcph->dest,bpf_ntohs(tcph->dest));
+        bpf_printk("No such ip %pI4 , drop",iph->daddr);
+        return XDP_DROP;
     }
-    // action = gen_mac(ctx,eth,iph);
-    __sum16	ip_sum = iph->check;
-    iph->check = iph_csum(iph);
-    __sum16	tcp_sum = tcph->check;
-    // here is the problem
-    // return XDP_PASS;
-    tcph->check = ipv4_l4_csum(tcph, tcp_len, iph,data_end);
-    // return action;
-    bpf_printk("ip_sum from %u to %u,tcp_sum from %u to %u,action:%u",
-       ip_sum,iph->check,tcp_sum,tcph->check,action);
     return action;
 }
 
