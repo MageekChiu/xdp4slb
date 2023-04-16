@@ -1,8 +1,8 @@
 随着 eBPF 的发展，我们已经可以将 eBPF/XDP 程序直接部署在普通服务器上来实现负载均衡，从而节省掉用于专门部署 LVS 的机器。
 
-[前文](./README-0.1.md) 分享了如何使用 xdp/ebpf 替换 lvs 来实现 slb，采用的是 slb 独立机器部署模式，并且采用 bpftool 和硬编码配置的形式来进行加载 xdp 程序，这是 [版本 0.1](https://github.com/MageekChiu/xdp4slb/tree/dev-0.1)。
+[前文](https://mp.weixin.qq.com/s/74OcWnQfc9dTSqOZfD-8eg) 分享了如何使用 xdp/ebpf 替换 lvs 来实现 slb，采用的是 slb 独立机器部署模式，并且采用 bpftool 和硬编码配置的形式来进行加载 xdp 程序，这是 [版本 0.1](https://github.com/MageekChiu/xdp4slb/tree/dev-0.1)。
 
-[版本 0.2](https://github.com/MageekChiu/xdp4slb/tree/dev-0.2) 在 0.1 基础上，修改为基于 [bpf skeleton](https://nakryiko.com/posts/bcc-to-libbpf-howto-guide/#bpf-skeleton-and-bpf-app-lifecycle) 的程序化加载模式，要想简单地体验下这种工作流而不改动 版本0.1 中整体部署模式的，可以去看看 https://github.com/MageekChiu/xdp4slb/tree/dev-0.2。
+[版本 0.2](https://github.com/MageekChiu/xdp4slb/tree/dev-0.2) 在 0.1 基础上，修改为基于 [bpf skeleton](https://nakryiko.com/posts/bcc-to-libbpf-howto-guide/#bpf-skeleton-and-bpf-app-lifecycle) 的程序化加载模式，要想简单地体验下这种工作流而不改动 版本0.1 中整体部署模式的，可以去看看 https://github.com/MageekChiu/xdp4slb/tree/dev-0.2 
 
 [版本 0.3](https://github.com/MageekChiu/xdp4slb/tree/dev-0.3) 在 0.2 基础上，支持以配置文件和命令行参数的形式动态加载 slb 配置
 
@@ -72,7 +72,7 @@ done
 
 架构图如下，这里做了简化，client 和 mix 之间实际上是有 router/switch 的，但是我们采用上面的模拟脚本把 router/switch 路由功能也直接放 client 里面了。
 
-![image.png](/img/bVc7ofx)
+![image.png](https://image-static.segmentfault.com/201/108/2011082448-643a44122b38f_fix732)
 
 深蓝色表示请求，浅蓝色表示响应。
 vip 采用了 ecmp，一次请求只会路由到一个 mix 上，mis 上的 slb 可能会把这个转发到本地 app（本文以 Nginx 为例） 或其它 mix，但是响应一定是从 mix 直接回去的，而不会再次经过其它 mix。
