@@ -19,16 +19,7 @@ const volatile __u32 NUM_BACKENDS  = 2;
 // there is something wrong with a direct enum
 const volatile __u32 cur_lb_alg = 3;
 
-// in container, one global var would affect another,so use map
-// to be continued
-// not var but the log !
 const volatile __u32 local_ip = 0;
-// struct {
-//     __uint(type, BPF_MAP_TYPE_ARRAY);
-//     __uint(max_entries, 1);
-//     __type(key, __u32);
-//     __type(value, __u32);
-// } local_ip_map SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
@@ -61,16 +52,56 @@ static void print_mac(char *prefix ,unsigned char mac[ETH_ALEN]){
         mac[3],mac[4],mac[5]
     );
 }
+// __attribute__((always_inline))
+// static int gen_mac(struct xdp_md *ctx, struct ethhdr *eth ,struct iphdr *iph,
+//                 unsigned char n_s[ETH_ALEN],unsigned char n_d[ETH_ALEN]){  
+//     // https://nakryiko.com/posts/bpf-tips-printk/ not supported yet
+//     // bpf_printk("origin: 0x%pM   to 0x%pM  \n \
+//     // now 0x%pM   to 0x%pM   ",
+//     // eth->h_source,eth->h_dest,
+//     // n_s,n_d);
+
+//     // not enough param number in one line
+//     bpf_printk("%u,origin- %02x:%02x:%02x:%02x:%02x:%02x",local_ip,
+//         eth->h_source[0],eth->h_source[1],eth->h_source[2],
+//         eth->h_source[3],eth->h_source[4],eth->h_source[5]
+//     );
+//     bpf_printk("%u,to----- %02x:%02x:%02x:%02x:%02x:%02x",local_ip,
+//         eth->h_dest[0],eth->h_dest[1],eth->h_dest[2],
+//         eth->h_dest[3],eth->h_dest[4],eth->h_dest[5]
+//     );
+//     bpf_printk("%u,now---- %02x:%02x:%02x:%02x:%02x:%02x",local_ip,
+//         n_s[0],n_s[1],n_s[2],n_s[3],n_s[4],n_s[5]
+//     );
+//     bpf_printk("%u,to----- %02x:%02x:%02x:%02x:%02x:%02x",local_ip,
+//         n_d[0],n_d[1],n_d[2],n_d[3],n_d[4],n_d[5]
+//     );
+
+//     memcpy(eth->h_source, n_s, ETH_ALEN);
+//     memcpy(eth->h_dest, n_d, ETH_ALEN);
+//     return XDP_TX;
+// }
+
 __attribute__((always_inline))
 static int gen_mac(struct xdp_md *ctx, struct ethhdr *eth ,struct iphdr *iph,
-                unsigned char n_s[ETH_ALEN],unsigned char n_d[ETH_ALEN]){  
-    // https://nakryiko.com/posts/bpf-tips-printk/ not supported yet
-    // bpf_printk("origin: 0x%pM   to 0x%pM  \n \
-    // now 0x%pM   to 0x%pM   ",
-    // eth->h_source,eth->h_dest,
-    // n_s,n_d);
+                    __u32 ipv4_src, __u32 ipv4_dst){
+    struct bpf_fib_lookup fib_params;
+    memset(&fib_params, 0, sizeof(fib_params));
 
-    // not enough param number in one line
+	fib_params.family	= AF_INET;
+    fib_params.tos		= iph->tos;
+    fib_params.l4_protocol	= iph->protocol;
+    fib_params.sport	= 0;
+    fib_params.dport	= 0;
+    fib_params.tot_len	= bpf_ntohs(iph->tot_len);
+    fib_params.ipv4_src	= ipv4_src;
+    fib_params.ipv4_dst	= ipv4_dst;
+    fib_params.ifindex = ctx->ingress_ifindex;
+
+    bpf_printk("%u,Look up from %u|%pI4n to %u|%pI4n",local_ip,
+        ipv4_src,&ipv4_src,ipv4_dst,&ipv4_dst);
+    int action = XDP_PASS;
+    int rc = bpf_fib_lookup(ctx, &fib_params, sizeof(fib_params), 0);
     bpf_printk("%u,origin- %02x:%02x:%02x:%02x:%02x:%02x",local_ip,
         eth->h_source[0],eth->h_source[1],eth->h_source[2],
         eth->h_source[3],eth->h_source[4],eth->h_source[5]
@@ -79,53 +110,37 @@ static int gen_mac(struct xdp_md *ctx, struct ethhdr *eth ,struct iphdr *iph,
         eth->h_dest[0],eth->h_dest[1],eth->h_dest[2],
         eth->h_dest[3],eth->h_dest[4],eth->h_dest[5]
     );
+    switch (rc) {
+        case BPF_FIB_LKUP_RET_SUCCESS:         /* lookup successful */
+            memcpy(eth->h_dest, fib_params.dmac, ETH_ALEN);
+            memcpy(eth->h_source, fib_params.smac, ETH_ALEN);
+            action = XDP_TX;
+            bpf_printk("%u,BPF_FIB_LKUP_RET_SUCCESS: %u, TX",local_ip,rc);
+            break;
+        case BPF_FIB_LKUP_RET_BLACKHOLE:    /* dest is blackholed; can be dropped */
+        case BPF_FIB_LKUP_RET_UNREACHABLE:  /* dest is unreachable; can be dropped */
+        case BPF_FIB_LKUP_RET_PROHIBIT:     /* dest not allowed; can be dropped */
+            action = XDP_DROP;
+            bpf_printk("%u,BPF_FIB_LKUP_RET_UNREACHABLE: %u, DROP",local_ip,rc);
+            break;
+        case BPF_FIB_LKUP_RET_NOT_FWDED:    /* packet is not forwarded */
+        case BPF_FIB_LKUP_RET_FWD_DISABLED: /* fwding is not enabled on ingress */
+        case BPF_FIB_LKUP_RET_UNSUPP_LWT:   /* fwd requires encapsulation */
+        case BPF_FIB_LKUP_RET_NO_NEIGH:     /* no neighbor entry for nh */
+        case BPF_FIB_LKUP_RET_FRAG_NEEDED:  /* fragmentation required to fwd */
+            bpf_printk("%u,BPF_FIB_LKUP_RET_NOT_FWDED: %u, PASS",local_ip,rc);
+            break;
+	}
     bpf_printk("%u,now---- %02x:%02x:%02x:%02x:%02x:%02x",local_ip,
-        n_s[0],n_s[1],n_s[2],n_s[3],n_s[4],n_s[5]
+        eth->h_source[0],eth->h_source[1],eth->h_source[2],
+        eth->h_source[3],eth->h_source[4],eth->h_source[5]
     );
     bpf_printk("%u,to----- %02x:%02x:%02x:%02x:%02x:%02x",local_ip,
-        n_d[0],n_d[1],n_d[2],n_d[3],n_d[4],n_d[5]
+        eth->h_dest[0],eth->h_dest[1],eth->h_dest[2],
+        eth->h_dest[3],eth->h_dest[4],eth->h_dest[5]
     );
-
-    memcpy(eth->h_source, n_s, ETH_ALEN);
-    memcpy(eth->h_dest, n_d, ETH_ALEN);
-    return XDP_TX;
+    return action;
 }
-
-// static __attribute__((always_inline)) int gen_mac(struct xdp_md *ctx, struct ethhdr *eth ,struct iphdr *iph){
-//     struct bpf_fib_lookup fib_params = {};
-// 	fib_params.family	= AF_INET;
-//     fib_params.tos		= iph->tos;
-//     fib_params.l4_protocol	= iph->protocol;
-//     fib_params.sport	= 0;
-//     fib_params.dport	= 0;
-//     fib_params.tot_len	= bpf_ntohs(iph->tot_len);
-//     fib_params.ipv4_src	= iph->saddr;
-//     fib_params.ipv4_dst	= iph->daddr;
-//     fib_params.ifindex = ctx->ingress_ifindex;
-
-//     int action = XDP_PASS;
-//     int rc = bpf_fib_lookup(ctx, &fib_params, sizeof(fib_params), 0);
-//     switch (rc) {
-//         case BPF_FIB_LKUP_RET_SUCCESS:         /* lookup successful */
-//             memcpy(eth->h_dest, fib_params.dmac, ETH_ALEN);
-//             memcpy(eth->h_source, fib_params.smac, ETH_ALEN);
-//             action = XDP_TX;
-//             break;
-//         case BPF_FIB_LKUP_RET_BLACKHOLE:    /* dest is blackholed; can be dropped */
-//         case BPF_FIB_LKUP_RET_UNREACHABLE:  /* dest is unreachable; can be dropped */
-//         case BPF_FIB_LKUP_RET_PROHIBIT:     /* dest not allowed; can be dropped */
-//             action = XDP_DROP;
-//             break;
-//         case BPF_FIB_LKUP_RET_NOT_FWDED:    /* packet is not forwarded */
-//         case BPF_FIB_LKUP_RET_FWD_DISABLED: /* fwding is not enabled on ingress */
-//         case BPF_FIB_LKUP_RET_UNSUPP_LWT:   /* fwd requires encapsulation */
-//         case BPF_FIB_LKUP_RET_NO_NEIGH:     /* no neighbor entry for nh */
-//         case BPF_FIB_LKUP_RET_FRAG_NEEDED:  /* fragmentation required to fwd */
-//             /* PASS */
-//             break;
-// 	}
-//     return action;
-// }
 
 
 // todo implement different load balancing algorithm
@@ -257,7 +272,8 @@ int xdp_lb(struct xdp_md *ctx){
             bpf_printk("%u,Picked this rs, pass",local_ip);
             return XDP_PASS;
         }
-        action = gen_mac(ctx,eth,iph,vip->mac_addr,rs->mac_addr);
+        // action = gen_mac(ctx,eth,iph,vip->mac_addr,rs->mac_addr);
+        action = gen_mac(ctx,eth,iph,local_ip,rs->ip_int);
         bpf_printk("%u,Ingress a nat packet of tuple\n \
         from %u|%pI4n:%u|%u to %u|%pI4n:%u|%u,",local_ip, 
         iph->saddr,&(iph->saddr),tcph->source,bpf_ntohs(tcph->source),

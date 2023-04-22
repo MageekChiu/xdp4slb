@@ -20,7 +20,7 @@
 // https://github.com/libbpf/libbpf-rs/issues/185
 #define XDP_FLAGS XDP_FLAGS_UPDATE_IF_NOEXIST | XDP_FLAGS_SKB_MODE
 #define LINE_SIZE 256
-#define LINE_ELEM_NUM 4
+#define LINE_ELEM_NUM 3
 
 const static __u32 map_flags = BPF_ANY;
 const static __u32 FIXED_INDEX = 0;
@@ -34,7 +34,7 @@ static struct env {
 	struct host_meta vip;
 	__u8 back_num;
 	__u32 local_ip;
-	__u8 local_mac[ETH_ALEN];
+	// __u8 local_mac[ETH_ALEN];
 	// flexible array member must be at end of struct
 	// struct host_meta backends[];
 	struct host_meta backends[MAX_BACKEND];
@@ -151,27 +151,27 @@ static int parse_conf(){
 		}
 
 		errno = 0;
-		__u16 port = strtol(meta[3], NULL, 10);
+		__u16 port = strtol(meta[2], NULL, 10);
 		if (errno || port < 1 || port > 65535) {
 			fprintf(stderr, "error port %s, errno %d!\n",meta[3],errno);
         	err = 1;
 			break;
 		}
 
-		__u8 mac_addr[ETH_ALEN];
-		__u32 values[ETH_ALEN];
-		int j;
-		if( ETH_ALEN == sscanf(meta[2], "%x:%x:%x:%x:%x:%x%*c",
-			&values[0], &values[1], &values[2],
-			&values[3], &values[4], &values[5]) ){
-			for( j = 0; j < ETH_ALEN; ++j )
-				mac_addr[j] = (__u8) values[j];
-		}else{
-			/* invalid mac */
-			fprintf(stderr, "Error mac %s!\n",meta[2]);
-        	err = 1;
-			break;
-		}
+		// __u8 mac_addr[ETH_ALEN];
+		// __u32 values[ETH_ALEN];
+		// int j;
+		// if( ETH_ALEN == sscanf(meta[2], "%x:%x:%x:%x:%x:%x%*c",
+		// 	&values[0], &values[1], &values[2],
+		// 	&values[3], &values[4], &values[5]) ){
+		// 	for( j = 0; j < ETH_ALEN; ++j )
+		// 		mac_addr[j] = (__u8) values[j];
+		// }else{
+		// 	/* invalid mac */
+		// 	fprintf(stderr, "Error mac %s!\n",meta[2]);
+        // 	err = 1;
+		// 	break;
+		// }
 
 		struct host_meta hm;
 		// if ip is array ,I dont need to do the following 3 line,
@@ -186,11 +186,11 @@ static int parse_conf(){
 		hm.ip_int = ip;
 		// error
 		// hm.mac_addr = mac_addr;
-		memcpy(hm.mac_addr, mac_addr, ETH_ALEN);
+		// memcpy(hm.mac_addr, mac_addr, ETH_ALEN);
 		hm.port = htons(port);
 
 		if (strcmp(meta[0], "vip") == 0){
-			memcpy(hm.mac_addr, env.local_mac, ETH_ALEN);
+			// memcpy(hm.mac_addr, env.local_mac, ETH_ALEN);
 			env.vip = hm;
 		}
 		else if (strcmp(meta[0], "backend") == 0){
@@ -202,11 +202,12 @@ static int parse_conf(){
 			break;
 		}
 		fprintf(stderr, "type: %s, ip: %s--%s--%u--%u,\
-mac: %s--%02x:%02x:%02x:%02x:%02x:%02x,\
 port: %s--%u \n",
-			meta[0],meta[1],hm.ip,ip,hm.ip_int,meta[2],
-			hm.mac_addr[0],hm.mac_addr[1],hm.mac_addr[2],hm.mac_addr[3],hm.mac_addr[4],hm.mac_addr[5],
-			meta[3],hm.port);
+// mac: %s--%02x:%02x:%02x:%02x:%02x:%02x,port: %s--%u \n",
+			meta[0],meta[1],hm.ip,ip,hm.ip_int,
+			// meta[2],
+			// hm.mac_addr[0],hm.mac_addr[1],hm.mac_addr[2],hm.mac_addr[3],hm.mac_addr[4],hm.mac_addr[5],
+			meta[2],hm.port);
 
     }
 	if(line_num < 3 || backend_num < 1){
@@ -221,36 +222,56 @@ port: %s--%u \n",
 
 	return err;
 }
+static int healthz_tcp(__u32 ip, __u16 port){
+	int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0) {
+		fprintf(stderr, "error socket creating: \n");
+        return 1;
+    }
+
+    struct sockaddr_in servaddr;
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_port = port;
+    servaddr.sin_addr.s_addr = ip;
+
+    if (connect(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr)) < 0) {
+		fprintf(stderr, "error socket conecting: \n");
+        return 1;
+    }
+	
+	close(sockfd);
+    return 0; 
+}
 static int parse_local(){
-	// mac
-	char mac_file[64];
-	sprintf(mac_file,"/sys/class/net/%s/address",env.interface);
-	FILE *fp = fopen(mac_file, "r");
-    if (!fp){
-		fprintf(stderr, "Error opening mac file %s!\n",mac_file);
-        return 1;
-    }
-	int mac_str_len = 18;
-	char mac_str[mac_str_len];
-	char *r = fgets(mac_str, mac_str_len, fp);
-	if (!r){
-		fprintf(stderr, "Error reading mac string %s!\n",mac_file);
-        return 1;
-    }
-	__u32 values[ETH_ALEN];
-	int j;
-	if( ETH_ALEN == sscanf(mac_str, "%x:%x:%x:%x:%x:%x%*c",
-		&values[0], &values[1], &values[2],
-		&values[3], &values[4], &values[5]) ){
-		for( j = 0; j < ETH_ALEN; ++j )
-			env.local_mac[j] = (__u8) values[j];
-	}else{
-		/* invalid mac */
-		fprintf(stderr, "Error mac %s in file %s!\n",mac_str,mac_file);
-		return 1;
-	}
-	memcpy(env.vip.mac_addr,env.local_mac,ETH_ALEN);
-    fclose(fp);
+	// // mac
+	// char mac_file[64];
+	// sprintf(mac_file,"/sys/class/net/%s/address",env.interface);
+	// FILE *fp = fopen(mac_file, "r");
+    // if (!fp){
+	// 	fprintf(stderr, "Error opening mac file %s!\n",mac_file);
+    //     return 1;
+    // }
+	// int mac_str_len = 18;
+	// char mac_str[mac_str_len];
+	// char *r = fgets(mac_str, mac_str_len, fp);
+	// if (!r){
+	// 	fprintf(stderr, "Error reading mac string %s!\n",mac_file);
+    //     return 1;
+    // }
+	// __u32 values[ETH_ALEN];
+	// int j;
+	// if( ETH_ALEN == sscanf(mac_str, "%x:%x:%x:%x:%x:%x%*c",
+	// 	&values[0], &values[1], &values[2],
+	// 	&values[3], &values[4], &values[5]) ){
+	// 	for( j = 0; j < ETH_ALEN; ++j )
+	// 		env.local_mac[j] = (__u8) values[j];
+	// }else{
+	// 	/* invalid mac */
+	// 	fprintf(stderr, "Error mac %s in file %s!\n",mac_str,mac_file);
+	// 	return 1;
+	// }
+	// // memcpy(env.vip.mac_addr,env.local_mac,ETH_ALEN);
+    // fclose(fp);
 	
 	// ip, no clear file to read
 	// awk '/32 host/ { print f } {f=$2}' <<< "$(</proc/net/fib_trie)"
@@ -359,6 +380,12 @@ int main(int argc, char **argv){
     //     return 1;
     // }
 	for(int i = 0;i < env.back_num;i++){
+		int error = healthz_tcp(env.backends[i].ip_int,env.backends[i].port);
+		if(error){
+			fprintf(stderr, "Error checking backend %u:%u!\n",
+			env.backends[i].ip_int,env.backends[i].port);
+			// continue;
+		}
 		err = bpf_map_update_elem(backends_map_fd, &i, &(env.backends[i]), map_flags);
 		if (err){
 			fprintf(stderr, "Error updating backends_map %u, code %u, reaon %s!\n",backends_map_fd, errno,strerror(errno));

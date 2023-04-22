@@ -2,11 +2,16 @@
 #define memcpy(dest, src, n) __builtin_memcpy((dest), (src), (n))
 #endif
 
+#ifndef memset
+#define memset(dest, c, n) __builtin_memset(dest, c, n) 
+#endif
 
 #define ETH_P_IP	0x0800		
 #define ETH_ALEN 6
-// #undef AF_INET
-// #define AF_INET 2
+#undef AF_INET
+#define AF_INET 2
+#undef AF_INET6
+#define AF_INET6 10
 #define TCP_MAX_BITS 1480
 #define IP_STRING_LEN 16
 
@@ -39,6 +44,6 @@ struct host_meta {
     char *ip;
     // __u8 ip[IP_STRING_LEN];
     __u32 ip_int;
-    __u8 mac_addr[ETH_ALEN];
+    // __u8 mac_addr[ETH_ALEN];
     __u16 port;
 }__attribute__((packed));
