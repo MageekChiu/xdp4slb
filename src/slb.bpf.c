@@ -45,6 +45,17 @@ struct {
 } back_map SEC(".maps");
 
 
+// statics 
+volatile __u64 total_bits = 0;
+
+volatile __u64 local_bits = 0;
+
+struct {
+	__uint(type, BPF_MAP_TYPE_RINGBUF);
+	__uint(max_entries, RING_BUFF_MAX);
+} rb SEC(".maps");
+
+
 __attribute__((always_inline))
 static void print_mac(char *prefix ,unsigned char mac[ETH_ALEN]){
     bpf_printk("%s %02x:%02x:%02x:%02x:%02x:%02x",
@@ -181,12 +192,26 @@ static struct host_meta *get_backend(enum LB_ALG alg,ce *nat_key){
     }
 }
 
+__attribute__((always_inline)) 
+static void fire_event(struct tcphdr *tcph){
+    if(tcph->syn){
+        struct event *e;
+        e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
+        if (!e){
+            return;
+        }
+        e->local_bits = local_bits;
+        e->total_bits = total_bits;
+        bpf_ringbuf_submit(e, 0);
+    }
+}
 
 SEC("xdp")
 int xdp_lb(struct xdp_md *ctx){
     void *data = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
-    bpf_printk("%u,Got a packet",local_ip);
+    int pkt_sz = data_end - data;
+    bpf_printk("%u,Got a packet, size %u",local_ip,pkt_sz);
     struct ethhdr *eth = data;
     if (data + sizeof(struct ethhdr) > data_end)
         return XDP_PASS;
@@ -225,6 +250,7 @@ int xdp_lb(struct xdp_md *ctx){
         iph->daddr,&(iph->daddr),tcph->dest,bpf_ntohs(tcph->dest),
         local_ip, &local_ip);
         return XDP_PASS;
+        // this is a direct packet to rs, so doen't count for slb statics
     }
 
     __u16 tcp_len = bpf_ntohs(iph->tot_len) - (iph->ihl << 2);
@@ -252,6 +278,7 @@ int xdp_lb(struct xdp_md *ctx){
             bpf_printk("%u,No such port %u , drop",local_ip,bpf_ntohs(tcph->dest));
             return XDP_DROP;
         }
+        total_bits += pkt_sz;
         // Choose a backend server to send the request to; 
         // within a lifetime of tcp conn, backend must be the same
         ce nat_key = {
@@ -269,9 +296,12 @@ int xdp_lb(struct xdp_md *ctx){
             bpf_map_update_elem(&back_map, &nat_key, rs, map_flags); 
         }
         if(rs->ip_int == local_ip){
+            local_bits += pkt_sz;
             bpf_printk("%u,Picked this rs, pass",local_ip);
+            fire_event(tcph);
             return XDP_PASS;
         }
+        fire_event(tcph);
         // action = gen_mac(ctx,eth,iph,vip->mac_addr,rs->mac_addr);
         action = gen_mac(ctx,eth,iph,local_ip,rs->ip_int);
         bpf_printk("%u,Ingress a nat packet of tuple\n \

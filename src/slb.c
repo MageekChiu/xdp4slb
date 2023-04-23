@@ -105,6 +105,13 @@ static void sig_int(int signo){
 	exiting = 1;
 }
 
+static int handle_event(void *ctx, void *data, size_t data_sz)
+{
+	const struct event *e = data;
+	fprintf(stderr, "Mix:%u, total_bits: %llu, local_bits: %llu\n",env.local_ip,e->total_bits,e->local_bits);
+	return 0;
+}
+
 static void populate_defaults(){
 	if(!env.interface){
 		env.interface = "eth0";
@@ -297,6 +304,8 @@ static int parse_local(){
 int main(int argc, char **argv){
 
 	int err;
+	struct ring_buffer *rb = NULL;
+	struct slb_bpf *skel;
 
 	libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
 	/* Set up libbpf errors and debug info callback */
@@ -318,7 +327,7 @@ int main(int argc, char **argv){
 	signal(SIGTERM, sig_int);
 
 	/* Load and verify BPF programs */
-	struct slb_bpf *skel = slb_bpf__open();
+	skel = slb_bpf__open();
 	if (!skel) {
 		fprintf(stderr, "Failed to open and load BPF skeleton\n");
 		return 1;
@@ -393,14 +402,31 @@ int main(int argc, char **argv){
 		}
 	}
 
+	rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), handle_event, NULL, NULL);
+	if (!rb) {
+		err = -1;
+		fprintf(stderr, "Failed to create ring buffer\n");
+		goto cleanup;
+	}
+
 	while (!exiting) {
-		fprintf(stderr, ".");
-		sleep(1);
+		// fprintf(stderr, ".");
+		// sleep(1);
+		err = ring_buffer__poll(rb, RING_BUFF_TIMEOUT);
+		if (err == -EINTR) {
+			err = 0;
+			break;
+		}
+		if (err < 0) {
+			printf("Error polling perf buffer: %d\n", err);
+			break;
+		}
 	}
 
 cleanup:
 	/* Clean up */
 	bpf_xdp_detach(ifindex, XDP_FLAGS,NULL);
+	ring_buffer__free(rb);
 	slb_bpf__destroy(skel);
 
 	return err < 0 ? -err : 0;

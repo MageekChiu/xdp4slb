@@ -47,3 +47,12 @@ struct host_meta {
     // __u8 mac_addr[ETH_ALEN];
     __u16 port;
 }__attribute__((packed));
+
+#define RING_BUFF_MAX 1024
+
+#define RING_BUFF_TIMEOUT 1000
+
+struct event {
+	__u64 total_bits;
+    __u64 local_bits;
+};
