@@ -57,41 +57,12 @@ struct {
 
 
 __attribute__((always_inline))
-static void print_mac(char *prefix ,unsigned char mac[ETH_ALEN]){
-    bpf_printk("%s %02x:%02x:%02x:%02x:%02x:%02x",
-        prefix,mac[0],mac[1],mac[2],
+static void print_mac(__u32 ip,char *prefix ,unsigned char mac[ETH_ALEN]){
+    bpf_printk("%u,%s %02x:%02x:%02x:%02x:%02x:%02x",
+        ip,prefix,mac[0],mac[1],mac[2],
         mac[3],mac[4],mac[5]
     );
 }
-// __attribute__((always_inline))
-// static int gen_mac(struct xdp_md *ctx, struct ethhdr *eth ,struct iphdr *iph,
-//                 unsigned char n_s[ETH_ALEN],unsigned char n_d[ETH_ALEN]){  
-//     // https://nakryiko.com/posts/bpf-tips-printk/ not supported yet
-//     // bpf_printk("origin: 0x%pM   to 0x%pM  \n \
-//     // now 0x%pM   to 0x%pM   ",
-//     // eth->h_source,eth->h_dest,
-//     // n_s,n_d);
-
-//     // not enough param number in one line
-//     bpf_printk("%u,origin- %02x:%02x:%02x:%02x:%02x:%02x",local_ip,
-//         eth->h_source[0],eth->h_source[1],eth->h_source[2],
-//         eth->h_source[3],eth->h_source[4],eth->h_source[5]
-//     );
-//     bpf_printk("%u,to----- %02x:%02x:%02x:%02x:%02x:%02x",local_ip,
-//         eth->h_dest[0],eth->h_dest[1],eth->h_dest[2],
-//         eth->h_dest[3],eth->h_dest[4],eth->h_dest[5]
-//     );
-//     bpf_printk("%u,now---- %02x:%02x:%02x:%02x:%02x:%02x",local_ip,
-//         n_s[0],n_s[1],n_s[2],n_s[3],n_s[4],n_s[5]
-//     );
-//     bpf_printk("%u,to----- %02x:%02x:%02x:%02x:%02x:%02x",local_ip,
-//         n_d[0],n_d[1],n_d[2],n_d[3],n_d[4],n_d[5]
-//     );
-
-//     memcpy(eth->h_source, n_s, ETH_ALEN);
-//     memcpy(eth->h_dest, n_d, ETH_ALEN);
-//     return XDP_TX;
-// }
 
 __attribute__((always_inline))
 static int gen_mac(struct xdp_md *ctx, struct ethhdr *eth ,struct iphdr *iph,
@@ -113,14 +84,8 @@ static int gen_mac(struct xdp_md *ctx, struct ethhdr *eth ,struct iphdr *iph,
         ipv4_src,&ipv4_src,ipv4_dst,&ipv4_dst);
     int action = XDP_PASS;
     int rc = bpf_fib_lookup(ctx, &fib_params, sizeof(fib_params), 0);
-    bpf_printk("%u,origin- %02x:%02x:%02x:%02x:%02x:%02x",local_ip,
-        eth->h_source[0],eth->h_source[1],eth->h_source[2],
-        eth->h_source[3],eth->h_source[4],eth->h_source[5]
-    );
-    bpf_printk("%u,to----- %02x:%02x:%02x:%02x:%02x:%02x",local_ip,
-        eth->h_dest[0],eth->h_dest[1],eth->h_dest[2],
-        eth->h_dest[3],eth->h_dest[4],eth->h_dest[5]
-    );
+    print_mac(local_ip,"origin--",eth->h_source);
+    print_mac(local_ip,"to------",eth->h_dest);
     switch (rc) {
         case BPF_FIB_LKUP_RET_SUCCESS:         /* lookup successful */
             memcpy(eth->h_dest, fib_params.dmac, ETH_ALEN);
@@ -142,14 +107,8 @@ static int gen_mac(struct xdp_md *ctx, struct ethhdr *eth ,struct iphdr *iph,
             bpf_printk("%u,BPF_FIB_LKUP_RET_NOT_FWDED: %u, PASS",local_ip,rc);
             break;
 	}
-    bpf_printk("%u,now---- %02x:%02x:%02x:%02x:%02x:%02x",local_ip,
-        eth->h_source[0],eth->h_source[1],eth->h_source[2],
-        eth->h_source[3],eth->h_source[4],eth->h_source[5]
-    );
-    bpf_printk("%u,to----- %02x:%02x:%02x:%02x:%02x:%02x",local_ip,
-        eth->h_dest[0],eth->h_dest[1],eth->h_dest[2],
-        eth->h_dest[3],eth->h_dest[4],eth->h_dest[5]
-    );
+    print_mac(local_ip,"now-----",eth->h_source);
+    print_mac(local_ip,"to------",eth->h_dest);
     return action;
 }
 
@@ -158,7 +117,7 @@ static int gen_mac(struct xdp_md *ctx, struct ethhdr *eth ,struct iphdr *iph,
 __attribute__((always_inline))
 static struct host_meta *lb_hash(ce *nat_key){
     // with hash, we dobn't need to sync session amongst slb intances
-    __u32 hash = ((nat_key->ip >> 7) & nat_key->port >> 3);
+    __u32 hash = ((nat_key->ip << 16) | nat_key->port);
     bpf_printk("%u,LB hash %u",local_ip,hash);
     __u32 backend_idx = hash % NUM_BACKENDS;
     return bpf_map_lookup_elem(&backends_map, &backend_idx);
@@ -235,12 +194,6 @@ int xdp_lb(struct xdp_md *ctx){
     if (data + sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct tcphdr) > data_end)
         return XDP_PASS;
 
-    //  __u32 *local_ip_addr = bpf_map_lookup_elem(&local_ip_map, &FIXED_INDEX);
-    // if((!local_ip_addr)){
-    //     bpf_printk("No local_ip, pass");
-    //     return XDP_PASS;
-    // }
-    // __u32 local_ip = *local_ip_addr;
     if(iph->daddr == local_ip){
         // process as real server
         bpf_printk("%u,Process a packet of tuple\n \
@@ -282,7 +235,6 @@ int xdp_lb(struct xdp_md *ctx){
         // Choose a backend server to send the request to; 
         // within a lifetime of tcp conn, backend must be the same
         ce nat_key = {
-            // keep the original net edian
             .ip = iph->saddr,
             .port = tcph->source
         };
@@ -302,7 +254,6 @@ int xdp_lb(struct xdp_md *ctx){
             return XDP_PASS;
         }
         fire_event(tcph);
-        // action = gen_mac(ctx,eth,iph,vip->mac_addr,rs->mac_addr);
         action = gen_mac(ctx,eth,iph,local_ip,rs->ip_int);
         bpf_printk("%u,Ingress a nat packet of tuple\n \
         from %u|%pI4n:%u|%u to %u|%pI4n:%u|%u,",local_ip, 

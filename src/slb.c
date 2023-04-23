@@ -34,9 +34,6 @@ static struct env {
 	struct host_meta vip;
 	__u8 back_num;
 	__u32 local_ip;
-	// __u8 local_mac[ETH_ALEN];
-	// flexible array member must be at end of struct
-	// struct host_meta backends[];
 	struct host_meta backends[MAX_BACKEND];
 	
 } env;
@@ -165,21 +162,6 @@ static int parse_conf(){
 			break;
 		}
 
-		// __u8 mac_addr[ETH_ALEN];
-		// __u32 values[ETH_ALEN];
-		// int j;
-		// if( ETH_ALEN == sscanf(meta[2], "%x:%x:%x:%x:%x:%x%*c",
-		// 	&values[0], &values[1], &values[2],
-		// 	&values[3], &values[4], &values[5]) ){
-		// 	for( j = 0; j < ETH_ALEN; ++j )
-		// 		mac_addr[j] = (__u8) values[j];
-		// }else{
-		// 	/* invalid mac */
-		// 	fprintf(stderr, "Error mac %s!\n",meta[2]);
-        // 	err = 1;
-		// 	break;
-		// }
-
 		struct host_meta hm;
 		// if ip is array ,I dont need to do the following 3 line,
 		// a simple memcpy wiil do
@@ -188,16 +170,10 @@ static int parse_conf(){
 		memcpy(hm.ip, meta[1], size);
 
 		__u32 ip = inet_addr(hm.ip);
-		// no need ip is network endian already
-		// hm.ip_int = htonl(ip);
 		hm.ip_int = ip;
-		// error
-		// hm.mac_addr = mac_addr;
-		// memcpy(hm.mac_addr, mac_addr, ETH_ALEN);
 		hm.port = htons(port);
 
 		if (strcmp(meta[0], "vip") == 0){
-			// memcpy(hm.mac_addr, env.local_mac, ETH_ALEN);
 			env.vip = hm;
 		}
 		else if (strcmp(meta[0], "backend") == 0){
@@ -210,10 +186,7 @@ static int parse_conf(){
 		}
 		fprintf(stderr, "type: %s, ip: %s--%s--%u--%u,\
 port: %s--%u \n",
-// mac: %s--%02x:%02x:%02x:%02x:%02x:%02x,port: %s--%u \n",
 			meta[0],meta[1],hm.ip,ip,hm.ip_int,
-			// meta[2],
-			// hm.mac_addr[0],hm.mac_addr[1],hm.mac_addr[2],hm.mac_addr[3],hm.mac_addr[4],hm.mac_addr[5],
 			meta[2],hm.port);
 
     }
@@ -250,36 +223,6 @@ static int healthz_tcp(__u32 ip, __u16 port){
     return 0; 
 }
 static int parse_local(){
-	// // mac
-	// char mac_file[64];
-	// sprintf(mac_file,"/sys/class/net/%s/address",env.interface);
-	// FILE *fp = fopen(mac_file, "r");
-    // if (!fp){
-	// 	fprintf(stderr, "Error opening mac file %s!\n",mac_file);
-    //     return 1;
-    // }
-	// int mac_str_len = 18;
-	// char mac_str[mac_str_len];
-	// char *r = fgets(mac_str, mac_str_len, fp);
-	// if (!r){
-	// 	fprintf(stderr, "Error reading mac string %s!\n",mac_file);
-    //     return 1;
-    // }
-	// __u32 values[ETH_ALEN];
-	// int j;
-	// if( ETH_ALEN == sscanf(mac_str, "%x:%x:%x:%x:%x:%x%*c",
-	// 	&values[0], &values[1], &values[2],
-	// 	&values[3], &values[4], &values[5]) ){
-	// 	for( j = 0; j < ETH_ALEN; ++j )
-	// 		env.local_mac[j] = (__u8) values[j];
-	// }else{
-	// 	/* invalid mac */
-	// 	fprintf(stderr, "Error mac %s in file %s!\n",mac_str,mac_file);
-	// 	return 1;
-	// }
-	// // memcpy(env.vip.mac_addr,env.local_mac,ETH_ALEN);
-    // fclose(fp);
-	
 	// ip, no clear file to read
 	// awk '/32 host/ { print f } {f=$2}' <<< "$(</proc/net/fib_trie)"
 	struct ifreq ifr;
@@ -308,7 +251,6 @@ int main(int argc, char **argv){
 	struct slb_bpf *skel;
 
 	libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
-	/* Set up libbpf errors and debug info callback */
 	libbpf_set_print(libbpf_print_fn);
 
 	/* Parse command line arguments */
@@ -343,14 +285,12 @@ int main(int argc, char **argv){
 	fprintf(stderr, "local ip %u \n",skel->rodata->local_ip);
 	fprintf(stderr, "backends num: %u \n",skel->rodata->NUM_BACKENDS);
 	
-
 	/* Load & verify BPF programs */
 	err = slb_bpf__load(skel);
 	if (err) {
 		fprintf(stderr, "Failed to load and verify BPF skeleton\n");
 		goto cleanup;
 	}
-
 
 	/* Attach  */
 	int ifindex = if_nametoindex(env.interface);
@@ -369,10 +309,8 @@ int main(int argc, char **argv){
 
 	// must be after attaching or "Error updating vip_map 4294967295, code 9, reaon Bad file descriptor!"
 	int vip_map_fd = bpf_map__fd(skel->maps.vip_map);
-	// int local_ip_map_fd = bpf_map__fd(skel->maps.local_ip_map);
 	int backends_map_fd = bpf_map__fd(skel->maps.backends_map);
 	if(!vip_map_fd || 
-		// !local_ip_map_fd || 
 		!backends_map_fd){
 		fprintf(stderr, "Failed to find config map\n");
 		return 1;
@@ -383,11 +321,6 @@ int main(int argc, char **argv){
 		fprintf(stderr, "Error updating vip_map %u, code %u, reaon %s!\n",vip_map_fd, errno,strerror(errno));
         return 1;
     }
-	// err = bpf_map_update_elem(local_ip_map_fd, &FIXED_INDEX, &(env.local_ip), map_flags);
-	// if (err){
-	// 	fprintf(stderr, "Error updating local_ip_map %u, code %u, reaon %s!\n",local_ip_map_fd, errno,strerror(errno));
-    //     return 1;
-    // }
 	for(int i = 0;i < env.back_num;i++){
 		int error = healthz_tcp(env.backends[i].ip_int,env.backends[i].port);
 		if(error){
@@ -410,8 +343,6 @@ int main(int argc, char **argv){
 	}
 
 	while (!exiting) {
-		// fprintf(stderr, ".");
-		// sleep(1);
 		err = ring_buffer__poll(rb, RING_BUFF_TIMEOUT);
 		if (err == -EINTR) {
 			err = 0;
