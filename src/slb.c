@@ -29,6 +29,8 @@ static struct env {
 	bool verbose;
 	char *interface;
 	enum LB_ALG cur_lb_alg;
+	__u32 max_conntrack;
+	enum clear_mode cur_clear_mode;
 
 	char *conf_path;
 	struct host_meta vip;
@@ -45,17 +47,20 @@ const char argp_program_doc[] =
 "\n"
 "Not Production Ready! \n"
 "\n"
-"USAGE: ./slb [-v] [-i nic] [-a alg] -c conf_path\n";
+"USAGE: ./slb [-v] [-i nic] [-a alg] [-m size] -c conf_path\n";
 
 static const struct argp_option opts[] = {
 	{ "verbose", 'v', NULL, 0, "Verbose debug output" },
 	{ "interface", 'i', "nic", 0, "Interface to attach, default:eth0" },
 	{ "alg", 'a', "lb_alg", 0, "Load balancing algorithm:random:1|round_robin:2|hash:3, default:hash" },
-	{ "conf", 'c', "conf_path", 0, "Config about vip,slb,backends" },
+	{ "conf", 'c', "conf_path", 0, "Config about vip,backends" },
+	{ "max_conn", 'm', "max_conntrack_size", 0, "max entry of conntrack table size,default:4096" },
+	{ "clear_mode", 'k', "clear_mode", 0, "how we clear conntrack entry:just_local:1|group_cast:2|broad_cast:3, default:just_local" },
 	{},
 };
 
 static error_t parse_arg(int key, char *arg, struct argp_state *state){
+	int no;
 	switch (key) {
 	case 'v':
 		env.verbose = true;
@@ -65,12 +70,30 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state){
 		break;
 	case 'a':
 		errno = 0;
-		int no = strtol(arg, NULL, 10);
+		no = strtol(arg, NULL, 10);
 		if (errno || no < 1 || no > 3) {
 			fprintf(stderr, "Invalid alg: %s, must be in 1,2,3\n", arg);
 			argp_usage(state);
 		}
 		env.cur_lb_alg = ( enum LB_ALG ) no;
+		break;
+	case 'm':
+		errno = 0;
+		no = strtol(arg, NULL, 10);
+		if (errno || no < 1 ) {
+			fprintf(stderr, "Invalid conntrack size: %s\n", arg);
+			argp_usage(state);
+		}
+		env.max_conntrack = no;
+		break;
+	case 'k':
+		errno = 0;
+		no = strtol(arg, NULL, 10);
+		if (errno || no < 1 || no > 3) {
+			fprintf(stderr, "Invalid mode: %s, must be in 1,2,3\n", arg);
+			argp_usage(state);
+		}
+		env.cur_clear_mode = (enum clear_mode ) no;
 		break;
 	case 'c':
 		env.conf_path = arg;
@@ -102,10 +125,12 @@ static void sig_int(int signo){
 	exiting = 1;
 }
 
-static int handle_event(void *ctx, void *data, size_t data_sz)
-{
-	const struct event *e = data;
-	fprintf(stderr, "Mix:%u, total_bits: %llu, local_bits: %llu\n",env.local_ip,e->total_bits,e->local_bits);
+static int handle_event(void *ctx, void *data, size_t data_sz){
+	// const struct event *e = data;
+	// fprintf(stderr, "Mix:%u, total_bits: %llu, local_bits: %llu\n",env.local_ip,e->total_bits,e->local_bits);
+	// return 0;
+	const ce *e = data;
+	fprintf(stderr, "Mix:%u, %u:%u is released\n",env.local_ip,e->ip,e->port);
 	return 0;
 }
 
@@ -119,6 +144,16 @@ static void populate_defaults(){
 		env.cur_lb_alg = lb_n_hash;
 	}
 	fprintf(stderr, "cur_lb_alg %d\n",env.cur_lb_alg);
+
+	if(!env.max_conntrack){
+		env.max_conntrack = MAX_CONNTRACK;
+	}
+	fprintf(stderr, "max_conntrack %d\n",env.max_conntrack);
+
+	if(!env.cur_clear_mode){
+		env.cur_clear_mode = just_local;
+	}
+	fprintf(stderr, "cur_clear_mode %d\n",env.cur_clear_mode);
 }
 
 static int parse_conf(){
@@ -279,6 +314,9 @@ int main(int argc, char **argv){
 	skel->rodata->NUM_BACKENDS = env.back_num;
 	skel->rodata->cur_lb_alg = env.cur_lb_alg;
 	skel->rodata->local_ip = env.local_ip;
+	skel->rodata->cur_clear_mode = env.cur_clear_mode;
+	bpf_map__set_max_entries(skel->maps.back_map, env.max_conntrack);
+	
 	// // accessible
 	fprintf(stderr, "alg %u \n",skel->rodata->cur_lb_alg);
 	fprintf(stderr, "vip %s \n",env.vip.ip);
@@ -293,6 +331,12 @@ int main(int argc, char **argv){
 	}
 
 	/* Attach  */
+	err = slb_bpf__attach(skel);
+	if (err) {
+		fprintf(stderr, "Failed to attach BPF skeleton\n");
+		goto cleanup;
+	}
+
 	int ifindex = if_nametoindex(env.interface);
 	if(!ifindex){
 		fprintf(stderr, "Failed to find nic %s \n",env.interface);
@@ -341,8 +385,9 @@ int main(int argc, char **argv){
 		fprintf(stderr, "Failed to create ring buffer\n");
 		goto cleanup;
 	}
-
+	fprintf(stderr, "Mix \t total_bits \t local_bits\n");
 	while (!exiting) {
+		fprintf(stderr, "%u \t %llu \t %llu\n",env.local_ip,skel->bss->total_bits,skel->bss->local_bits);
 		err = ring_buffer__poll(rb, RING_BUFF_TIMEOUT);
 		if (err == -EINTR) {
 			err = 0;

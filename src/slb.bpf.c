@@ -3,15 +3,10 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
+#include <bpf/bpf_core_read.h>
 
 const static __u32 map_flags = BPF_ANY;
 const static __u32 FIXED_INDEX = 0;
-
-struct conntrack_entry {
-    __u32 ip;
-    __u16 port;
-} __attribute__((packed));
-typedef struct conntrack_entry ce;
 
 
 const volatile __u32 NUM_BACKENDS  = 2;
@@ -20,6 +15,8 @@ const volatile __u32 NUM_BACKENDS  = 2;
 const volatile __u32 cur_lb_alg = 3;
 
 const volatile __u32 local_ip = 0;
+
+const volatile __u32 cur_clear_mode = 1;
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
@@ -39,7 +36,7 @@ struct {
 // client ip:port -> the corresponding backend
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __uint(max_entries, BACKEND_MAP_SIZE);
+    __uint(max_entries, MAX_CONNTRACK);
     __type(key, ce);
     __type(value, struct host_meta);
 } back_map SEC(".maps");
@@ -151,16 +148,38 @@ static struct host_meta *get_backend(enum LB_ALG alg,ce *nat_key){
     }
 }
 
+// __attribute__((always_inline)) 
+// static void fire_metrics_event(struct tcphdr *tcph){
+//     if(tcph->syn){
+//         struct event *e;
+//         e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
+//         if (!e){
+//             return;
+//         }
+//         e->local_bits = local_bits;
+//         e->total_bits = total_bits;
+//         bpf_ringbuf_submit(e, 0);
+//     }
+// }
+
 __attribute__((always_inline)) 
-static void fire_event(struct tcphdr *tcph){
-    if(tcph->syn){
-        struct event *e;
+static void fire_sock_release_event(__u32 src_ip4,__u32 src_port){
+    if(cur_clear_mode == just_local){
+        ce nat_key = {
+            .ip = src_ip4,
+            .port = src_port
+        };
+        int err = bpf_map_delete_elem(&back_map, &nat_key); 
+	    bpf_printk("%u,%u|%pI4n:%u|%u is released, deleting resulst: %d\n",
+            local_ip, src_ip4, &src_ip4, src_port, bpf_ntohs(src_port), err);
+    }else{
+        ce *e;
         e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
         if (!e){
             return;
         }
-        e->local_bits = local_bits;
-        e->total_bits = total_bits;
+        e->ip = src_ip4;
+        e->port = src_port;
         bpf_ringbuf_submit(e, 0);
     }
 }
@@ -250,10 +269,10 @@ int xdp_lb(struct xdp_md *ctx){
         if(rs->ip_int == local_ip){
             local_bits += pkt_sz;
             bpf_printk("%u,Picked this rs, pass",local_ip);
-            fire_event(tcph);
+            // fire_metrics_event(tcph);
             return XDP_PASS;
         }
-        fire_event(tcph);
+        // fire_metrics_event(tcph);
         action = gen_mac(ctx,eth,iph,local_ip,rs->ip_int);
         bpf_printk("%u,Ingress a nat packet of tuple\n \
         from %u|%pI4n:%u|%u to %u|%pI4n:%u|%u,",local_ip, 
@@ -264,6 +283,62 @@ int xdp_lb(struct xdp_md *ctx){
         return XDP_DROP;
     }
     return action;
+}
+
+// // SEC("cgroup/sock_create")
+// // SEC("cgroup/sock_release")
+// int rele_hdl(struct bpf_sock *ctx) {
+// 	bpf_printk("%u,socket is being releasd,type %u:%u,proto %u:%u\n",
+//         local_ip,(__u8)ctx->type,bpf_htonl((__u8)ctx->type),
+//         (__u8)ctx->protocol,bpf_htonl((__u8)ctx->protocol));
+//     // if(ctx->protocol != IPPROTO_TCP){
+//     //     bpf_printk("%u,Sock not TCP, pass",local_ip);
+//     //     return 0;
+//     // }
+//     if(ctx->type != SOCK_STREAM){
+//         // bpf_printk("%u,Sock not TCP, pass",local_ip);
+//         return 0;
+//     }
+//     struct host_meta *vip = bpf_map_lookup_elem(&vip_map, &FIXED_INDEX);
+//     if((!vip)){
+//         bpf_printk("%u,Sock no vip, pass",local_ip);
+//         return 0;
+//     }
+//     int ip = BPF_CORE_READ(ctx,dst_ip4);
+//     int port = BPF_CORE_READ(ctx,dst_port);
+// 	bpf_printk("%u,%u:%u is being releasd\n",local_ip,ip,port);
+//     if(ip == vip->ip_int && port == vip->port){
+//         fire_sock_release_event(ip,port);
+//     }
+//     return 0;
+// }
+
+SEC("kprobe/inet_release")
+int BPF_KPROBE(kprobe_inet_release,struct socket *sock) {
+    const struct sock *sk = BPF_CORE_READ(sock, sk);
+    const int type = BPF_CORE_READ(sk,sk_type);
+    const int proto = BPF_CORE_READ(sk,sk_protocol);
+	bpf_printk("%u,socket is being releasd,type %u:%u,proto %u:%u\n",
+        local_ip,(__u8)type,bpf_htonl((__u8)type),
+        (__u8)proto,bpf_htonl((__u8)proto));
+    if(type != SOCK_STREAM){//1
+        // bpf_printk("%u,Sock not TCP, pass",local_ip);
+        return 0;
+    }
+    struct host_meta *vip = bpf_map_lookup_elem(&vip_map, &FIXED_INDEX);
+    if((!vip)){
+        bpf_printk("%u,Sock no vip, pass",local_ip);
+        return 0;
+    }
+    // todo
+    const sock_common skc = BPF_CORE_READ(sk,__sk_common);
+    const __u32 ip = BPF_CORE_READ(&sk,skc_daddr);  
+    const __u16 port = BPF_CORE_READ(&sk,skc_dport);
+	bpf_printk("%u,%u:%u is being releasd\n",local_ip,ip,port);
+    if(ip == vip->ip_int && port == vip->port){
+        fire_sock_release_event(ip,port);
+    }
+    return 0;
 }
 
 char _license[] SEC("license") = "GPL";
