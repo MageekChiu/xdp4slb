@@ -163,7 +163,7 @@ static struct host_meta *get_backend(enum LB_ALG alg,ce *nat_key){
 // }
 
 __attribute__((always_inline)) 
-static void fire_sock_release_event(__u32 src_ip4,__u32 src_port){
+static void fire_sock_release_event(__u32 src_ip4,__u16 src_port){
     if(cur_clear_mode == just_local){
         ce nat_key = {
             .ip = src_ip4,
@@ -318,9 +318,9 @@ int BPF_KPROBE(kprobe_inet_release,struct socket *sock) {
     const struct sock *sk = BPF_CORE_READ(sock, sk);
     const int type = BPF_CORE_READ(sk,sk_type);
     const int proto = BPF_CORE_READ(sk,sk_protocol);
-	bpf_printk("%u,socket is being releasd,type %u:%u,proto %u:%u\n",
-        local_ip,(__u8)type,bpf_htonl((__u8)type),
-        (__u8)proto,bpf_htonl((__u8)proto));
+	// bpf_printk("%u,socket is being releasd,type %u:%u,proto %u:%u\n",
+    //     local_ip,(__u8)type,bpf_htons((__u8)type),
+    //     (__u8)proto,bpf_htons((__u8)proto));
     if(type != SOCK_STREAM){//1
         // bpf_printk("%u,Sock not TCP, pass",local_ip);
         return 0;
@@ -330,14 +330,22 @@ int BPF_KPROBE(kprobe_inet_release,struct socket *sock) {
         bpf_printk("%u,Sock no vip, pass",local_ip);
         return 0;
     }
-    // todo
-    const sock_common skc = BPF_CORE_READ(sk,__sk_common);
-    const __u32 ip = BPF_CORE_READ(&sk,skc_daddr);  
-    const __u16 port = BPF_CORE_READ(&sk,skc_dport);
-	bpf_printk("%u,%u:%u is being releasd\n",local_ip,ip,port);
-    if(ip == vip->ip_int && port == vip->port){
-        fire_sock_release_event(ip,port);
+    // premature and mulitple times in one kernel
+    const struct sock_common skc = BPF_CORE_READ(sk,__sk_common);
+    const __u32 dip = (BPF_CORE_READ(&skc,skc_daddr));  
+    const __u16 dport = (BPF_CORE_READ(&skc,skc_dport));
+	// bpf_printk("%u,%u|%u:%u|%u is being releasd,vip:%u:%u\n",
+    //     local_ip,dip,bpf_htonl(dip),dport,bpf_htons(dport),
+    //     vip->ip_int,vip->port);
+    if(dip == vip->ip_int && dport == vip->port){
+        // const __u32 sip = (BPF_CORE_READ(&skc,skc_rcv_saddr));  
+        // const __u16 sport = (BPF_CORE_READ(&skc,skc_num));
+        struct inet_sock *inet = (struct inet_sock *)(sk);
+        const __u32 sip = (BPF_CORE_READ(inet,inet_saddr));
+        const __u16 sport = (BPF_CORE_READ(inet,inet_sport));
+        fire_sock_release_event(sip,sport);
     }
+
     return 0;
 }
 
