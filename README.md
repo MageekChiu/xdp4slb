@@ -285,7 +285,7 @@ Percentage of the requests served within a certain time (ms)
 
 ```
 
-还可以增大并发数测试，并发最大理论值是我们存储 conntrack 条目的 back_map 数量最大值。超过这个并发数，会导致重新路由映射，可能导致 tcp reset。
+还可以增大并发数测试，并发最大理论值是我们存储 conntrack 条目的 back_map 数量最大值。超过这个并发数，会导致重新路由映射(哈希模式下不会)，可能导致 tcp reset。
 
 # 下文预告
 要想打造一个完整的 slb，还有许多工作要做，比如利用内核能力进行 mac 自动寻址、许多边界检查等。这都是后面要做的工作，欢迎大家一起参与 https://github.com/MageekChiu/xdp4slb/。
