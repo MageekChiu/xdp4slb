@@ -165,6 +165,7 @@ static struct host_meta *get_backend(enum LB_ALG alg,ce *nat_key){
 __attribute__((always_inline)) 
 static void fire_sock_release_event(__u32 src_ip4,__u16 src_port){
     if(cur_clear_mode == just_local){
+        // if it is just local we better do it in kernel for the sake of performence
         ce nat_key = {
             .ip = src_ip4,
             .port = src_port
@@ -173,6 +174,7 @@ static void fire_sock_release_event(__u32 src_ip4,__u16 src_port){
 	    bpf_printk("%u,%u|%pI4n:%u|%u is released, deleting resulst: %d\n",
             local_ip, src_ip4, &src_ip4, src_port, bpf_ntohs(src_port), err);
     }else{
+        // let user space to do the boradcasting
         ce *e;
         e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
         if (!e){
@@ -313,14 +315,23 @@ int xdp_lb(struct xdp_md *ctx){
 //     return 0;
 // }
 
+/**
+// too earlly and mulitple times in one kernel
+// in fact the former is because that the probe detects both server and client side
+// and the latter is beacuse all the mix are detect in one probe
+// in reality, we won't put all the slb in one kernel ,so it won't matter
 SEC("kprobe/inet_release")
 int BPF_KPROBE(kprobe_inet_release,struct socket *sock) {
+// all fileds seems to be 0
+// SEC("fexit/inet_release")
+// int BPF_PROG(inet_release_exit,struct socket *sock,int ret) {
     const struct sock *sk = BPF_CORE_READ(sock, sk);
+    struct inet_sock *inet = (struct inet_sock *)(sk);
     const int type = BPF_CORE_READ(sk,sk_type);
     const int proto = BPF_CORE_READ(sk,sk_protocol);
-	// bpf_printk("%u,socket is being releasd,type %u:%u,proto %u:%u\n",
-    //     local_ip,(__u8)type,bpf_htons((__u8)type),
-    //     (__u8)proto,bpf_htons((__u8)proto));
+	bpf_printk("%u,socket is being releasd,type %u:%u,proto %u:%u\n",
+        local_ip,type,bpf_htons(type),
+        proto,bpf_htons(proto));
     if(type != SOCK_STREAM){//1
         // bpf_printk("%u,Sock not TCP, pass",local_ip);
         return 0;
@@ -330,7 +341,6 @@ int BPF_KPROBE(kprobe_inet_release,struct socket *sock) {
         bpf_printk("%u,Sock no vip, pass",local_ip);
         return 0;
     }
-    // premature and mulitple times in one kernel
     const struct sock_common skc = BPF_CORE_READ(sk,__sk_common);
     const __u32 dip = (BPF_CORE_READ(&skc,skc_daddr));  
     const __u16 dport = (BPF_CORE_READ(&skc,skc_dport));
@@ -346,6 +356,44 @@ int BPF_KPROBE(kprobe_inet_release,struct socket *sock) {
         fire_sock_release_event(sip,sport);
     }
 
+    return 0;
+}
+*/
+
+SEC("tp_btf/inet_sock_set_state")
+int BPF_PROG(trace_inet_sock_set_state, struct sock *sk, int oldstate,
+	     int newstate){
+
+	if (newstate != BPF_TCP_CLOSE)
+        return 0;
+	
+    const int type = BPF_CORE_READ(sk,sk_type);
+    const int proto = BPF_CORE_READ(sk,sk_protocol);
+	// bpf_printk("%u,socket is being releasd,type %u:%u,proto %u:%u, oldstate:%u\n",
+    //     local_ip,type,bpf_htons(type),
+    //     proto,bpf_htons(proto),oldstate);
+    if(type != SOCK_STREAM){//1
+        // bpf_printk("%u,Sock not TCP, pass",local_ip);
+        return 0;
+    }
+    struct host_meta *vip = bpf_map_lookup_elem(&vip_map, &FIXED_INDEX);
+    if((!vip)){
+        bpf_printk("%u,Sock no vip, pass",local_ip);
+        return 0;
+    }
+    const struct sock_common skc = BPF_CORE_READ(sk,__sk_common);
+    const __u32 dip = (BPF_CORE_READ(&skc,skc_daddr));  
+    const __u16 dport = (BPF_CORE_READ(&skc,skc_dport));
+    struct inet_sock *inet = (struct inet_sock *)(sk);
+    const __u32 sip = (BPF_CORE_READ(inet,inet_saddr));
+    const __u16 sport = (BPF_CORE_READ(inet,inet_sport));
+	// bpf_printk("%u,%u:%u-->%u|%u is being releasd,vip:%u:%u\n",
+    //     local_ip,sip,sport,dip,dport,
+    //     vip->ip_int,vip->port);
+    // this is server side, so sip and sport
+    if(sip == vip->ip_int && sport == vip->port){       
+        fire_sock_release_event(dip,dport);
+    }
     return 0;
 }
 
