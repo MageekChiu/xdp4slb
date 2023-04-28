@@ -55,7 +55,7 @@ static const struct argp_option opts[] = {
 	{ "alg", 'a', "lb_alg", 0, "Load balancing algorithm:random:1|round_robin:2|hash:3, default:hash" },
 	{ "conf", 'c', "conf_path", 0, "Config about vip,backends" },
 	{ "max_conn", 'm', "max_conntrack_size", 0, "max entry of conntrack table size,default:4096" },
-	{ "clear_mode", 'k', "clear_mode", 0, "how we clear conntrack entry:just_local:1|group_cast:2|broad_cast:3, default:just_local" },
+	{ "clear_mode", 'k', "clear_mode", 0, "how we clear conntrack entry: none_clear:1|just_local:2|group_cast:3|broad_cast:4, default:just_local" },
 	{},
 };
 
@@ -89,8 +89,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state){
 	case 'k':
 		errno = 0;
 		no = strtol(arg, NULL, 10);
-		if (errno || no < 1 || no > 3) {
-			fprintf(stderr, "Invalid mode: %s, must be in 1,2,3\n", arg);
+		if (errno || no < 1 || no > 4) {
+			fprintf(stderr, "Invalid mode: %s, must be in 1,2,3,4\n", arg);
 			argp_usage(state);
 		}
 		env.cur_clear_mode = (enum clear_mode ) no;
@@ -331,11 +331,15 @@ int main(int argc, char **argv){
 	}
 
 	/* Attach  */
-	err = slb_bpf__attach(skel);
-	if (err) {
-		fprintf(stderr, "Failed to attach BPF skeleton\n");
-		goto cleanup;
+	if(env.cur_clear_mode > none_clear){
+		fprintf(stderr, "Loading conntrack clearing mode:%u\n",env.cur_clear_mode);
+		err = slb_bpf__attach(skel);
+		if (err) {
+			fprintf(stderr, "Failed to attach BPF skeleton\n");
+			goto cleanup;
+		}
 	}
+	
 
 	int ifindex = if_nametoindex(env.interface);
 	if(!ifindex){

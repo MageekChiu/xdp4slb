@@ -28,9 +28,10 @@ enum LB_ALG{
 };
 
 enum clear_mode{
-    just_local = 1, 
-    group_cast = 2, 
-    broad_cast = 3,
+    none_clear = 1, 
+    just_local , 
+    group_cast, 
+    broad_cast,
 };
 
 typedef unsigned int __u32;

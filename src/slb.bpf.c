@@ -16,7 +16,7 @@ const volatile __u32 cur_lb_alg = 3;
 
 const volatile __u32 local_ip = 0;
 
-const volatile __u32 cur_clear_mode = 1;
+const volatile __u32 cur_clear_mode = 2;
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
