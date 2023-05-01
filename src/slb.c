@@ -36,6 +36,7 @@ static struct env {
 	struct host_meta vip;
 	__u8 back_num;
 	__u32 local_ip;
+	__u64 cur_cgp_id;
 	struct host_meta backends[MAX_BACKEND];
 	
 } env;
@@ -47,15 +48,16 @@ const char argp_program_doc[] =
 "\n"
 "Not Production Ready! \n"
 "\n"
-"USAGE: ./slb [-v] [-i nic] [-a alg] [-m size] -c conf_path\n";
+"USAGE: ./slb [-v] [-i nic] [-a alg] [-m size] [-g cgroup_id] -c conf_path\n";
 
 static const struct argp_option opts[] = {
 	{ "verbose", 'v', NULL, 0, "Verbose debug output" },
 	{ "interface", 'i', "nic", 0, "Interface to attach, default:eth0" },
 	{ "alg", 'a', "lb_alg", 0, "Load balancing algorithm:random:1|round_robin:2|hash:3, default:hash" },
 	{ "conf", 'c', "conf_path", 0, "Config about vip,backends" },
-	{ "max_conn", 'm', "max_conntrack_size", 0, "max entry of conntrack table size,default:4096" },
-	{ "clear_mode", 'k', "clear_mode", 0, "how we clear conntrack entry: none_clear:1|just_local:2|group_cast:3|broad_cast:4, default:just_local" },
+	{ "mx_con", 'm', "max_conntrack_size", 0, "max entry of conntrack table size,default:4096" },
+	{ "clr_md", 'k', "clear_mode", 0, "how we clear conntrack entry: none_clear:1|just_local:2|group_cast:3|broad_cast:4, default:just_local" },
+	{ "cgp_id", 'g', "cgroup_id", 0, "cgroup id, useful in container" },
 	{},
 };
 
@@ -94,6 +96,15 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state){
 			argp_usage(state);
 		}
 		env.cur_clear_mode = (enum clear_mode ) no;
+		break;
+	case 'g':
+		errno = 0;
+		no = strtol(arg, NULL, 10);
+		if (errno) {
+			fprintf(stderr, "Invalid cgroup_id: %s\n", arg);
+			argp_usage(state);
+		}
+		env.cur_cgp_id = no;
 		break;
 	case 'c':
 		env.conf_path = arg;
@@ -154,6 +165,11 @@ static void populate_defaults(){
 		env.cur_clear_mode = just_local;
 	}
 	fprintf(stderr, "cur_clear_mode %d\n",env.cur_clear_mode);
+
+	if(!env.cur_cgp_id){
+		env.cur_cgp_id = 0;
+	}
+	fprintf(stderr, "cur_cgp_id %llu\n",env.cur_cgp_id);
 }
 
 static int parse_conf(){
@@ -311,6 +327,7 @@ int main(int argc, char **argv){
 	}
 
 	/* Parameterize BPF programs  */
+	skel->rodata->cur_cgp_id = env.cur_cgp_id;
 	skel->rodata->NUM_BACKENDS = env.back_num;
 	skel->rodata->cur_lb_alg = env.cur_lb_alg;
 	skel->rodata->local_ip = env.local_ip;
@@ -332,12 +349,26 @@ int main(int argc, char **argv){
 
 	/* Attach  */
 	if(env.cur_clear_mode > none_clear){
-		fprintf(stderr, "Loading conntrack clearing mode:%u\n",env.cur_clear_mode);
+		fprintf(stderr, "Attaching conntrack clearing, mode: %u,cgroup:%llu\n",
+			env.cur_clear_mode, env.cur_cgp_id);
+		
 		err = slb_bpf__attach(skel);
 		if (err) {
 			fprintf(stderr, "Failed to attach BPF skeleton\n");
 			goto cleanup;
 		}
+
+		// // Operation not supported
+		// errno = 0;
+		// bpf_program__attach(skel->progs.rele_hdl);
+		// if (errno ) {
+		// 	fprintf(stderr, "Invalid mode: %s\n", strerror(errno));
+		// }
+
+		// int cgid = bpf_get_current_cgroup_id();
+		// bpf_program__attach_cgroup(skel->progs.rele_hdl,cgid);
+	
+		// bpf_prog_attach(bpf_program__fd(skel->progs.rele_hdl),"",);
 	}
 	
 

@@ -18,6 +18,8 @@ const volatile __u32 local_ip = 0;
 
 const volatile __u32 cur_clear_mode = 2;
 
+const volatile __u64 cur_cgp_id = 0;
+
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, MAX_BACKEND);
@@ -162,18 +164,61 @@ static struct host_meta *get_backend(enum LB_ALG alg,ce *nat_key){
 //     }
 // }
 
+/**
+  // already defined
+__attribute__((always_inline)) 
+static int get_cgid(){
+	struct task_struct *task;
+	struct css_set *cgroups;
+
+	task = bpf_get_current_task_btf();
+
+	// simulate bpf_get_current_cgroup_id() helper 
+	// bpf_rcu_read_lock();
+	cgroups = task->cgroups;
+	if (!cgroups)
+		goto unlock;
+	int cgroup_id = cgroups->dfl_cgrp->kn->id;
+unlock:
+	// bpf_rcu_read_unlock();
+	return cgroup_id;
+}
+*/
+
 __attribute__((always_inline)) 
 static void fire_sock_release_event(__u32 src_ip4,__u16 src_port){
-    if(cur_clear_mode == just_local){
-        // if it is just local we better do it in kernel for the sake of performence
-        ce nat_key = {
-            .ip = src_ip4,
-            .port = src_port
-        };
-        int err = bpf_map_delete_elem(&back_map, &nat_key); 
-	    bpf_printk("%u,%u|%pI4n:%u|%u is released, deleting resulst: %d\n",
-            local_ip, src_ip4, &src_ip4, src_port, bpf_ntohs(src_port), err);
-    }else{
+    // if it is just local we better do it in kernel for the sake of performence
+    // in fact, no matter what, we should do it locally first
+    ce nat_key = {
+        .ip = src_ip4,
+        .port = src_port
+    };
+    // a workaround for avoiding involking muitiple times in one kernel
+    // struct host_meta *rs = bpf_map_lookup_elem(&back_map,&nat_key);
+    // if(!rs){
+    //     return;
+    // }
+    
+    // this is the cgid of the invoking part, just need the invoked part
+    int cgrid = bpf_get_current_cgroup_id();
+    if(cur_cgp_id && cur_cgp_id != cgrid){
+        return;
+    }
+    // given a cgrid, getting a cgroup path
+    // find /sys/fs/cgroup -inum 13173
+    // so this is actrually the inode num of the path
+    // int cur_cgp_id = get_cgid();
+    // int cur_cgp_id = 0;
+    // docker ps
+    // find /sys/fs/cgroup -name "*docker*"
+    // find /sys/fs/cgroup -name "*46282095db3a*" -o -name "*33ed500a9fd9*"
+    // stat path or ls -li parent_path
+    // __u64 pid = bpf_get_current_pid_tgid();
+    // bpf_printk("%u,pid=%u;\n",local_ip, pid);
+    int err = bpf_map_delete_elem(&back_map, &nat_key); 
+    bpf_printk("%u,%u|%pI4n:%u|%u is released,cgrid:%u,cur:%u, deleting result: %d\n",
+        local_ip, src_ip4, &src_ip4, src_port, bpf_ntohs(src_port),cgrid,cur_cgp_id, err);
+    if(cur_clear_mode > just_local){
         // let user space to do the boradcasting
         ce *e;
         e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
@@ -235,9 +280,11 @@ int xdp_lb(struct xdp_md *ctx){
         bpf_printk("%u,No vip, pass",local_ip);
         return XDP_PASS;
     }
-    bpf_printk("%u,Got a TCP packet of tuple \n \
+    // unknown func bpf_get_current_cgroup_id#80
+    // int cgrid = bpf_get_current_cgroup_id();
+    bpf_printk("%u,Got a TCP packet,cgrid \n \
             from %u|%pI4:%u|%u to %u|%pI4:%u|%u, \n \
-            vip.ip_int: %u|%pI4 ",local_ip,
+            vip.ip_int: %u|%pI4 ",local_ip,//cgrid,
     iph->saddr,&(iph->saddr),tcph->source,bpf_ntohs(tcph->source),
     iph->daddr,&(iph->daddr),tcph->dest, bpf_ntohs(tcph->dest),
     vip->ip_int,&(vip->ip_int));
@@ -287,33 +334,38 @@ int xdp_lb(struct xdp_md *ctx){
     return action;
 }
 
-// // SEC("cgroup/sock_create")
-// // SEC("cgroup/sock_release")
-// int rele_hdl(struct bpf_sock *ctx) {
-// 	bpf_printk("%u,socket is being releasd,type %u:%u,proto %u:%u\n",
-//         local_ip,(__u8)ctx->type,bpf_htonl((__u8)ctx->type),
-//         (__u8)ctx->protocol,bpf_htonl((__u8)ctx->protocol));
-//     // if(ctx->protocol != IPPROTO_TCP){
-//     //     bpf_printk("%u,Sock not TCP, pass",local_ip);
-//     //     return 0;
-//     // }
-//     if(ctx->type != SOCK_STREAM){
-//         // bpf_printk("%u,Sock not TCP, pass",local_ip);
-//         return 0;
-//     }
-//     struct host_meta *vip = bpf_map_lookup_elem(&vip_map, &FIXED_INDEX);
-//     if((!vip)){
-//         bpf_printk("%u,Sock no vip, pass",local_ip);
-//         return 0;
-//     }
-//     int ip = BPF_CORE_READ(ctx,dst_ip4);
-//     int port = BPF_CORE_READ(ctx,dst_port);
-// 	bpf_printk("%u,%u:%u is being releasd\n",local_ip,ip,port);
-//     if(ip == vip->ip_int && port == vip->port){
-//         fire_sock_release_event(ip,port);
-//     }
-//     return 0;
-// }
+/*
+// SEC("cgroup/sock_create")
+SEC("cgroup/sock_release")
+int rele_hdl(struct bpf_sock *ctx) {
+    // https://elixir.bootlin.com/linux/v6.1.11/source/include/uapi/linux/bpf.h#L5960
+    const int type = BPF_CORE_READ(ctx,type);
+    const int proto = BPF_CORE_READ(ctx,protocol);
+    __u32 sip = BPF_CORE_READ(ctx,src_ip4);
+    __u16 sport = bpf_htons((__u16)BPF_CORE_READ(ctx,src_port));
+    __u32 dip = BPF_CORE_READ(ctx,dst_ip4);
+    __u16 dport = BPF_CORE_READ(ctx,dst_port);
+
+    struct host_meta *vip = bpf_map_lookup_elem(&vip_map, &FIXED_INDEX);
+    if((!vip)){
+        bpf_printk("%u,Sock no vip, pass",local_ip);
+        return 0;
+    }
+	bpf_printk("%u,type:%u,proto:%u, %u:%u-->%u:%u is being releasd,vip:%u:%u\n",
+        local_ip,type,proto,sip,sport,dip,dport,
+        vip->ip_int,vip->port);
+
+    if(type != SOCK_STREAM){
+        // bpf_printk("%u,Sock not TCP, pass",local_ip);
+        return 0;
+    }
+	bpf_printk("%u,%u:%u is being releasd\n",local_ip,sip,sport);
+    if(dip == vip->ip_int && dport == vip->port){
+        fire_sock_release_event(sip,sport);
+    }
+    return 0;
+}
+*/
 
 /**
 // too earlly and mulitple times in one kernel
