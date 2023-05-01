@@ -9,6 +9,9 @@
 #include <sys/ioctl.h>
 #include <netinet/in.h>
 #include <linux/if.h>
+// #include <linux/ip.h>
+// #include <linux/udp.h>
+// #include <linux/in.h>
 #include <arpa/inet.h>
 #include <sys/resource.h>
 #include <bpf/libbpf.h>
@@ -34,6 +37,7 @@ static struct env {
 
 	char *conf_path;
 	struct host_meta vip;
+	struct host_meta gip;
 	__u8 back_num;
 	__u32 local_ip;
 	__u64 cur_cgp_id;
@@ -136,12 +140,57 @@ static void sig_int(int signo){
 	exiting = 1;
 }
 
+static bool forge_header(const ce *e, __u32 ip,__u16 port){
+
+	int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+    	fprintf(stderr,"error creating socket");
+    	return false;
+    }
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    // addr.sin_addr.s_addr = inet_addr(multi_group);
+    // addr.sin_port = htons(host_port);
+	addr.sin_addr.s_addr = ip;
+    addr.sin_port = port;
+
+ 	const char *message = "Hello, World!";
+	int cnt = sendto(fd,
+            message,strlen(message),
+            0,
+            (struct sockaddr*) &addr,sizeof(addr)
+        );
+	if (cnt < 0) {
+    	fprintf(stderr,"error sending msg");
+    	return false;
+	}
+	return true;
+}
+
+static bool do_multcast(const ce *e){
+	return forge_header(e,env.gip.ip_int,env.gip.port);
+}
+
+static bool do_broadcast(const ce *e){
+	return true;
+}
+
 static int handle_event(void *ctx, void *data, size_t data_sz){
 	// const struct event *e = data;
 	// fprintf(stderr, "Mix:%u, total_bits: %llu, local_bits: %llu\n",env.local_ip,e->total_bits,e->local_bits);
 	// return 0;
 	const ce *e = data;
-	fprintf(stderr, "Mix:%u, %u:%u is released\n",env.local_ip,e->ip,e->port);
+	bool sent = false;
+	// do the casting
+	if(env.cur_clear_mode == group_cast){
+		sent = do_multcast(e);
+	}else if(env.cur_clear_mode == broad_cast){
+		sent = do_broadcast(e);
+	}
+	fprintf(stderr, "Mix:%u, %u:%u is released,sent:%d\n",
+		env.local_ip,e->ip,e->port,sent);
 	return 0;
 }
 
@@ -230,6 +279,9 @@ static int parse_conf(){
 		else if (strcmp(meta[0], "backend") == 0){
 			env.backends[backend_num++] = hm;
 		}
+		else if (strcmp(meta[0], "gip") == 0){
+			env.gip = hm;
+		}
 		else{
 			fprintf(stderr, "Wrong element %s in %s, on line %u!\n",meta[0],line_buff,line_num);
         	err = 1;
@@ -315,6 +367,10 @@ int main(int argc, char **argv){
 	err = parse_conf();
 	if (err)
 		return err;
+	if(env.cur_clear_mode == group_cast && env.gip.ip == 0){
+		fprintf(stderr, "group ip must be specified\n");
+		return -1;
+	}
 	/* Cleaner handling of Ctrl-C */
 	signal(SIGINT, sig_int);
 	signal(SIGTERM, sig_int);
@@ -337,6 +393,7 @@ int main(int argc, char **argv){
 	// // accessible
 	fprintf(stderr, "alg %u \n",skel->rodata->cur_lb_alg);
 	fprintf(stderr, "vip %s \n",env.vip.ip);
+	fprintf(stderr, "gip %s \n",env.gip.ip);
 	fprintf(stderr, "local ip %u \n",skel->rodata->local_ip);
 	fprintf(stderr, "backends num: %u \n",skel->rodata->NUM_BACKENDS);
 	

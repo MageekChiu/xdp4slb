@@ -212,6 +212,12 @@ static void fire_sock_release_event(__u32 src_ip4,__u16 src_port){
     // docker ps
     // find /sys/fs/cgroup -name "*docker*"
     // find /sys/fs/cgroup -name "*46282095db3a*" -o -name "*33ed500a9fd9*"
+    /*
+    docker inspect -f "{{.Name}} {{.ID}}" $(docker ps -q)
+    
+    find /sys/fs/cgroup -name "*46282095db3a*" -o -name "*33ed500a9fd9*" | \
+        xargs -n1 stat --printf='\n%n %s %y %i\n'
+    */ 
     // stat path or ls -li parent_path
     // __u64 pid = bpf_get_current_pid_tgid();
     // bpf_printk("%u,pid=%u;\n",local_ip, pid);
