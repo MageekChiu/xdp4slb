@@ -34,6 +34,12 @@ struct {
     __type(value, struct host_meta);
 } vip_map SEC(".maps");
 
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct host_meta);
+} gip_map SEC(".maps");
 
 // client ip:port -> the corresponding backend
 struct {
@@ -41,7 +47,7 @@ struct {
     __uint(max_entries, MAX_CONNTRACK);
     __type(key, ce);
     __type(value, struct host_meta);
-} back_map SEC(".maps");
+} conntrack_map SEC(".maps");
 
 
 // statics 
@@ -186,19 +192,11 @@ unlock:
 */
 
 __attribute__((always_inline)) 
+static int sock_release_local(ce *nat_key){
+    return bpf_map_delete_elem(&conntrack_map, nat_key); 
+}
+__attribute__((always_inline)) 
 static void fire_sock_release_event(__u32 src_ip4,__u16 src_port){
-    // if it is just local we better do it in kernel for the sake of performence
-    // in fact, no matter what, we should do it locally first
-    ce nat_key = {
-        .ip = src_ip4,
-        .port = src_port
-    };
-    // a workaround for avoiding involking muitiple times in one kernel
-    // struct host_meta *rs = bpf_map_lookup_elem(&back_map,&nat_key);
-    // if(!rs){
-    //     return;
-    // }
-    
     // this is the cgid of the invoking part, just need the invoked part
     int cgrid = bpf_get_current_cgroup_id();
     if(cur_cgp_id && cur_cgp_id != cgrid){
@@ -214,14 +212,27 @@ static void fire_sock_release_event(__u32 src_ip4,__u16 src_port){
     // find /sys/fs/cgroup -name "*46282095db3a*" -o -name "*33ed500a9fd9*"
     /*
     docker inspect -f "{{.Name}} {{.ID}}" $(docker ps -q)
-    
+
     find /sys/fs/cgroup -name "*46282095db3a*" -o -name "*33ed500a9fd9*" | \
         xargs -n1 stat --printf='\n%n %s %y %i\n'
     */ 
     // stat path or ls -li parent_path
     // __u64 pid = bpf_get_current_pid_tgid();
     // bpf_printk("%u,pid=%u;\n",local_ip, pid);
-    int err = bpf_map_delete_elem(&back_map, &nat_key); 
+
+     // if it is just local we better do it in kernel for the sake of performence
+    // in fact, no matter what, we should do it locally first
+    ce nat_key = {
+        .ip = src_ip4,
+        .port = src_port
+    };
+    // a workaround for avoiding involking muitiple times in one kernel
+    // struct host_meta *rs = bpf_map_lookup_elem(&conntrack_map,&nat_key);
+    // if(!rs){
+    //     return;
+    // }
+
+    int err = sock_release_local(&nat_key);
     bpf_printk("%u,%u|%pI4n:%u|%u is released,cgrid:%u,cur:%u, deleting result: %d\n",
         local_ip, src_ip4, &src_ip4, src_port, bpf_ntohs(src_port),cgrid,cur_cgp_id, err);
     if(cur_clear_mode > just_local){
@@ -256,29 +267,39 @@ int xdp_lb(struct xdp_md *ctx){
     if (data + sizeof(struct ethhdr) + sizeof(struct iphdr) > data_end)
         return XDP_PASS;
 
+    __u16 sport,dport;
+    struct tcphdr *tcph;
+    struct udphdr *udph;
     // u8,so no big or little edian
-    if (iph->protocol != IPPROTO_TCP){
-        bpf_printk("%u,Not TCP, pass",local_ip);
+    if (iph->protocol == IPPROTO_TCP){
+        tcph = data + sizeof(struct ethhdr) + sizeof(struct iphdr);
+        if (data + sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct tcphdr) > data_end)
+            return XDP_PASS;
+        sport = tcph->source;
+        dport = tcph->dest;
+    }else if(iph->protocol == IPPROTO_UDP){
+        udph = data + sizeof(struct ethhdr) + sizeof(struct iphdr);
+        if (data + sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct udphdr) > data_end)
+            return XDP_PASS;
+        sport = udph->source;
+        dport = udph->dest;
+    }else{
+        bpf_printk("unknown protocol:%u, pass",iph->protocol);
         return XDP_PASS;
     }
-
-    struct tcphdr *tcph = data + sizeof(struct ethhdr) + sizeof(struct iphdr);
-    if (data + sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct tcphdr) > data_end)
-        return XDP_PASS;
 
     if(iph->daddr == local_ip){
         // process as real server
         bpf_printk("%u,Process a packet of tuple\n \
         from %u|%pI4n:%u|%u to %u|%pI4n:%u|%u,\n \
         local %u|%pI4n",local_ip, 
-        iph->saddr,&(iph->saddr),tcph->source,bpf_ntohs(tcph->source),
-        iph->daddr,&(iph->daddr),tcph->dest,bpf_ntohs(tcph->dest),
+        iph->saddr,&(iph->saddr),sport,bpf_ntohs(sport),
+        iph->daddr,&(iph->daddr),dport,bpf_ntohs(dport),
         local_ip, &local_ip);
         return XDP_PASS;
         // this is a direct packet to rs, so doen't count for slb statics
     }
 
-    __u16 tcp_len = bpf_ntohs(iph->tot_len) - (iph->ihl << 2);
 
     struct host_meta *vip = bpf_map_lookup_elem(&vip_map, &FIXED_INDEX);
     if((!vip)){
@@ -288,20 +309,22 @@ int xdp_lb(struct xdp_md *ctx){
     }
     // unknown func bpf_get_current_cgroup_id#80
     // int cgrid = bpf_get_current_cgroup_id();
-    bpf_printk("%u,Got a TCP packet,cgrid \n \
+    bpf_printk("%u,Got a l4 packet \n \
             from %u|%pI4:%u|%u to %u|%pI4:%u|%u, \n \
-            vip.ip_int: %u|%pI4 ",local_ip,//cgrid,
-    iph->saddr,&(iph->saddr),tcph->source,bpf_ntohs(tcph->source),
-    iph->daddr,&(iph->daddr),tcph->dest, bpf_ntohs(tcph->dest),
+            vip.ip_int: %u|%pI4 ",local_ip,
+    iph->saddr,&(iph->saddr),sport,bpf_ntohs(sport),
+    iph->daddr,&(iph->daddr),dport, bpf_ntohs(dport),
     vip->ip_int,&(vip->ip_int));
-    if (tcp_len > TCP_MAX_BITS){
-        bpf_printk("Tcp_len %u larger than max , drop",tcp_len);
+
+    __u16 l4_len = bpf_ntohs(iph->tot_len) - (iph->ihl << 2);
+    if (l4_len > L4_MAX_BITS){
+        bpf_printk("L4_len %u larger than max , drop",l4_len);
         return XDP_DROP;
     }
 
     int action = XDP_PASS;
     if (iph->daddr == vip->ip_int){
-        if(tcph->dest != vip->port){
+        if(dport != vip->port){
             bpf_printk("%u,No such port %u , drop",local_ip,bpf_ntohs(tcph->dest));
             return XDP_DROP;
         }
@@ -312,14 +335,14 @@ int xdp_lb(struct xdp_md *ctx){
             .ip = iph->saddr,
             .port = tcph->source
         };
-        struct host_meta *rs = bpf_map_lookup_elem(&back_map, &nat_key);
+        struct host_meta *rs = bpf_map_lookup_elem(&conntrack_map, &nat_key);
         if (rs == NULL){
             rs = get_backend(cur_lb_alg,&nat_key);
             if(!rs){
                 bpf_printk("%u,No rs, pass",local_ip);
                 return XDP_PASS;
             }
-            bpf_map_update_elem(&back_map, &nat_key, rs, map_flags); 
+            bpf_map_update_elem(&conntrack_map, &nat_key, rs, map_flags); 
         }
         if(rs->ip_int == local_ip){
             local_bits += pkt_sz;
@@ -333,11 +356,28 @@ int xdp_lb(struct xdp_md *ctx){
         from %u|%pI4n:%u|%u to %u|%pI4n:%u|%u,",local_ip, 
         iph->saddr,&(iph->saddr),tcph->source,bpf_ntohs(tcph->source),
         iph->daddr,&(iph->daddr),tcph->dest,bpf_ntohs(tcph->dest));
-    }else{
-        bpf_printk("%u,No such ip %pI4n , drop",local_ip,&iph->daddr);
+        return action;
+    }
+    struct host_meta *gip = bpf_map_lookup_elem(&gip_map, &FIXED_INDEX);
+    if((!gip)){
+        bpf_printk("%u,No gip, pass",local_ip);
+        return XDP_PASS;
+    }
+    if(gip->ip_int == iph->daddr && gip->port == dport){
+        bpf_printk("%u,groupcast recvd! processing and will drop",local_ip);
+
+        ce *payload  = data + sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct udphdr);
+        if (data + sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct udphdr) + sizeof(ce) > data_end) 
+            return XDP_DROP; 
+        __u32 ip = payload->ip;
+        __u16 port = payload->port;
+        int err = sock_release_local(payload);
+        bpf_printk("%u,groupcast releasing %u|%pI4:%u|%u,deleting result: %d\n",
+            local_ip,ip,&ip,port,bpf_ntohs(port),err);
         return XDP_DROP;
     }
-    return action;
+    bpf_printk("%u,No such ip %pI4n, drop",local_ip,&iph->daddr);
+    return XDP_DROP;
 }
 
 /*

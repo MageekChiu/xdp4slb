@@ -140,7 +140,7 @@ static void sig_int(int signo){
 	exiting = 1;
 }
 
-static bool forge_header(const ce *e, __u32 ip,__u16 port){
+static bool forge_header(const ce *e,__u32 ip, __u16 port){
 
 	int fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) {
@@ -156,9 +156,8 @@ static bool forge_header(const ce *e, __u32 ip,__u16 port){
 	addr.sin_addr.s_addr = ip;
     addr.sin_port = port;
 
- 	const char *message = "Hello, World!";
 	int cnt = sendto(fd,
-            message,strlen(message),
+            e,sizeof(e),
             0,
             (struct sockaddr*) &addr,sizeof(addr)
         );
@@ -388,7 +387,7 @@ int main(int argc, char **argv){
 	skel->rodata->cur_lb_alg = env.cur_lb_alg;
 	skel->rodata->local_ip = env.local_ip;
 	skel->rodata->cur_clear_mode = env.cur_clear_mode;
-	bpf_map__set_max_entries(skel->maps.back_map, env.max_conntrack);
+	bpf_map__set_max_entries(skel->maps.conntrack_map, env.max_conntrack);
 	
 	// // accessible
 	fprintf(stderr, "alg %u \n",skel->rodata->cur_lb_alg);
@@ -457,6 +456,19 @@ int main(int argc, char **argv){
 		fprintf(stderr, "Error updating vip_map %u, code %u, reaon %s!\n",vip_map_fd, errno,strerror(errno));
         return 1;
     }
+	if(env.cur_clear_mode == group_cast){
+		int gip_map_fd = bpf_map__fd(skel->maps.gip_map);
+		if(!gip_map_fd){
+			fprintf(stderr, "Failed to find gip config map\n");
+			return 1;
+		}
+		errno = 0;
+		err = bpf_map_update_elem(gip_map_fd, &FIXED_INDEX, &(env.gip), map_flags);
+		if (err){
+			fprintf(stderr, "Error updating vip_map %u, code %u, reaon %s!\n",vip_map_fd, errno,strerror(errno));
+			return 1;
+		}
+	}
 	for(int i = 0;i < env.back_num;i++){
 		int error = healthz_tcp(env.backends[i].ip_int,env.backends[i].port);
 		if(error){

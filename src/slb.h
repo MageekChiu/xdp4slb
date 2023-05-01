@@ -13,7 +13,7 @@
 #define AF_INET 2
 #undef AF_INET6
 #define AF_INET6 10
-#define TCP_MAX_BITS 1480
+#define L4_MAX_BITS 1480
 #define IP_STRING_LEN 16
 
 
